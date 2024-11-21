@@ -85,7 +85,7 @@ class SelfAttention(nn.Module):
     def forward(self, seqs, seqs_data):
         timeline_mask = torch.BoolTensor(
             seqs_data.cpu() == self.num_items).to(self.device)
-        seqs *= ~timeline_mask.unsqueeze(-1)  # Broadcast in the last dimension
+        seqs = seqs * ~timeline_mask.unsqueeze(-1)  # Broadcast in the last dimension
 
         # Length of the time dimension for enforce causality
         tl = seqs.shape[1]
@@ -104,7 +104,7 @@ class SelfAttention(nn.Module):
 
             seqs = self.forward_layernorms[i](seqs)
             seqs = self.forward_layers[i](seqs)
-            seqs *= ~timeline_mask.unsqueeze(-1)
+            seqs = seqs * ~timeline_mask.unsqueeze(-1)
 
         log_feats = self.last_layernorm(seqs)  # (U, T, C) -> (U, -1, C)
 
