@@ -248,7 +248,7 @@ class ModelTrainer(Trainer):
         kld_weight = self.kl_anneal_function(
             self.args.anneal_cap, step, self.args.total_annealing_step)
 
-        beta = 2.0  # 2.0 for FKCB, 0.5 for BMG and SGH
+        beta = 0  # 2.0 for FKCB, 0.5 for BMG and SGH
 
         gamma = 1.0  # 1.0 for all scenarios
 
