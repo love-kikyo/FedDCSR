@@ -42,7 +42,6 @@ class ModelTrainer(Trainer):
             # then `self.z_s = obj` / `self.z_g = obj` will just refer to a
             # new object `obj`, rather than modify `self.z_s` / `self.z_g`
             # itself
-            self.z_s, self.z_g = [None], [None]
             self.discri = Discriminator(
                 config.hidden_size, max_seq_len).to(self.device)
         elif "VGSAN" in self.method:
@@ -94,7 +93,8 @@ class ModelTrainer(Trainer):
             # Note that each batch must be convolved once, and the
             # item_embeddings input to the convolution layer are updated from
             # the previous batch.
-            self.model.graph_convolution(adj)
+            for i in range(len(num_items)):
+                self.model.graph_convolution(adj, i)
 
         sessions = [torch.LongTensor(x).to(self.device) for x in sessions]
 
@@ -107,18 +107,15 @@ class ModelTrainer(Trainer):
             # `contrast_aug_seqs` is used for computing contrastive infomax
             # loss
             seq, ground, ground_mask, js_neg_seqs, contrast_aug_seqs = sessions
-            result, result_exclusive, mu_s, logvar_s, self.z_s[0], mu_e, \
+            result, result_exclusive,  mu_e, \
                 logvar_e, z_e, neg_z_e, aug_z_e = self.model(
                     seq,
-                neg_seqs=js_neg_seqs,
-                aug_seqs=contrast_aug_seqs)
+                    neg_seqs=js_neg_seqs,
+                    aug_seqs=contrast_aug_seqs)
             # Broadcast in last dim. it well be used to compute `z_g` by
             # federated aggregation later
-            self.z_s[0] *= ground_mask.unsqueeze(-1)
-            loss = self.disen_vgsan_loss_fn(result, result_exclusive, mu_s,
-                                            logvar_s,  mu_e, logvar_e,
-                                            ground, self.z_s[0], self.z_g[0],
-                                            z_e, neg_z_e, aug_z_e, ground_mask,
+            loss = self.disen_vgsan_loss_fn(result, result_exclusive, mu_e, logvar_e,
+                                            ground, z_e, neg_z_e, aug_z_e, ground_mask,
                                             num_items, self.step)
 
         elif "VGSAN" in self.method:
@@ -194,27 +191,11 @@ class ModelTrainer(Trainer):
         self.step += 1
         return loss.item()
 
-    def disen_vgsan_loss_fn(self, result, result_exclusive, mu_s, logvar_s,
-                            mu_e, logvar_e, ground, z_s, z_g, z_e, neg_z_e,
+    def disen_vgsan_loss_fn(self, result, result_exclusive,
+                            mu_e, logvar_e, ground, z_e, neg_z_e,
                             aug_z_e, ground_mask, num_items, step):
         """Overall loss function of FedDCSR (our method).
         """
-
-        def sim_loss_fn(self, z_s, z_g, neg_z_e, ground_mask):
-            pos = self.discri(z_s, z_g, ground_mask)
-            neg = self.discri(neg_z_e, z_g, ground_mask)
-
-            # pos_label, neg_label = torch.ones(pos.size()).to(self.device), \
-            #     torch.zeros(neg.size()).to(self.device)
-            # sim_loss = self.bce_criterion(pos, pos_label) \
-            #     + self.bce_criterion(neg, neg_label)
-
-            # sim_loss = self.jsd_criterion(pos, neg)
-            sim_loss = self.hinge_criterion(pos, neg)
-
-            sim_loss = sim_loss.mean()
-
-            return sim_loss
 
         recons_loss = self.cs_criterion(
             result.reshape(-1, num_items + 1),
@@ -227,28 +208,15 @@ class ModelTrainer(Trainer):
         recons_loss_exclusive = (
             recons_loss_exclusive * (ground_mask.reshape(-1))).mean()
 
-        kld_loss_s = -0.5 * \
-            torch.sum(1 + logvar_s - mu_s ** 2 -
-                      logvar_s.exp(), dim=-1).reshape(-1)
-        kld_loss_s = (kld_loss_s * (ground_mask.reshape(-1))).mean()
-
         kld_loss_e = -0.5 * \
             torch.sum(1 + logvar_e - mu_e ** 2 -
                       logvar_e.exp(), dim=-1).reshape(-1)
         kld_loss_e = (kld_loss_e * (ground_mask.reshape(-1))).mean()
 
-        # If it is the first training round
-        if z_g is not None:
-            sim_loss = sim_loss_fn(self, z_s, z_g, neg_z_e, ground_mask)
-        else:
-            sim_loss = 0
-
         alpha = 1.0  # 1.0 for all scenarios
 
         kld_weight = self.kl_anneal_function(
             self.args.anneal_cap, step, self.args.total_annealing_step)
-
-        beta = 2.0  # 2.0 for FKCB, 0.5 for BMG and SGH
 
         gamma = 1.0  # 1.0 for all scenarios
 
@@ -260,9 +228,8 @@ class ModelTrainer(Trainer):
             user_representation1, user_representation2)
         contrastive_loss = contrastive_loss.mean()
 
-        loss = alpha * (recons_loss + kld_weight * kld_loss_s + kld_weight
+        loss = alpha * (recons_loss + kld_weight
                         * kld_loss_e) \
-            + beta * sim_loss \
             + gamma * recons_loss_exclusive \
             + lam * contrastive_loss
 
