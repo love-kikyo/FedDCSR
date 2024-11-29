@@ -23,7 +23,6 @@ class Client:
         self.model_id = args.id if len(args.id) > 1 else "0" + args.id
         if args.method == "FedDCSR":
             self.z_s = self.trainer.z_s
-            self.z_g = self.trainer.z_g
         self.c_id = c_id
         self.args = args
         self.adj = adj
@@ -152,13 +151,6 @@ class Client:
         elif "DuoRec" in self.method:
             return copy.deepcopy([self.model.encoder.state_dict()])
 
-    def get_reps_shared(self):
-        """Returns the user sequence representations that need to be shared
-        between clients.
-        """
-        assert (self.method == "FedDCSR")
-        return copy.deepcopy(self.z_s[0].detach())
-
     def set_global_params(self, global_params):
         """Assign the local shared model parameters with global model
         parameters.
@@ -182,12 +174,6 @@ class Client:
             self.model.encoder.load_state_dict(global_params[0])
         elif self.method == "FedDuoRec":
             self.model.encoder.load_state_dict(global_params[0])
-
-    def set_global_reps(self, global_rep):
-        """Copy global user sequence representations to local.
-        """
-        assert (self.method == "FedDCSR")
-        self.z_g[0] = copy.deepcopy(global_rep)
 
     def save_params(self):
         method_ckpt_path = os.path.join(self.checkpoint_dir,

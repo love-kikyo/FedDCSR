@@ -38,29 +38,6 @@ class Server(object):
                             * current_client_params[key]
             self.global_params[branch_idx] = client_params_sum
 
-    def aggregate_reps(self, clients, random_cids):
-        """Sums up representations of user sequences shared by all active
-        clients at each epoch.
-
-        Args:
-            clients: A list of clients instances.
-            random_cids: Randomly selected client ID in each training round.
-        """
-        # Record the user sequence aggregation results of each branch
-        # separately
-        client_reps_sum = None
-        for c_id in random_cids:
-            # Obtain current client's user sequence representations
-            current_client_reps = clients[c_id].get_reps_shared()
-            # Sum it up with weights
-            if client_reps_sum is None:
-                client_reps_sum = current_client_reps * \
-                    clients[c_id].train_weight
-            else:
-                client_reps_sum += clients[c_id].train_weight * \
-                    current_client_reps
-        self.global_reps = client_reps_sum
-
     def choose_clients(self, n_clients, ratio=1.0):
         """Randomly chooses some clients.
         """
@@ -71,8 +48,3 @@ class Server(object):
         """Returns a reference to the parameters of the global model.
         """
         return self.global_params
-
-    def get_global_reps(self):
-        """Returns a reference to the parameters of the global model.
-        """
-        return self.global_reps

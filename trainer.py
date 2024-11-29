@@ -35,14 +35,7 @@ class ModelTrainer(Trainer):
         self.device = "cuda:%s" % args.gpu if args.cuda else "cpu"
         if self.method == "FedDCSR":
             self.model = DisenVGSAN(num_items, args).to(self.device)
-            # Here we set `self.z_s[:], self.z_g = [None], [None]` so that
-            # we can use `self.z_s[:] = ...`, `self.z_g[:] = ...` to modify
-            # them later.
-            # Note that if we set `self.z_s, self.z_g = None, None`,
-            # then `self.z_s = obj` / `self.z_g = obj` will just refer to a
-            # new object `obj`, rather than modify `self.z_s` / `self.z_g`
-            # itself
-            self.z_s, self.z_g = [None], [None]
+            self.z_s = [None]
             self.discri = Discriminator(
                 config.hidden_size, max_seq_len).to(self.device)
         elif "VGSAN" in self.method:
@@ -117,7 +110,7 @@ class ModelTrainer(Trainer):
             self.z_s[0] *= ground_mask.unsqueeze(-1)
             loss = self.disen_vgsan_loss_fn(result, result_exclusive, mu_s,
                                             logvar_s,  mu_e, logvar_e,
-                                            ground, self.z_s[0], self.z_g[0],
+                                            ground, self.z_s[0],
                                             z_e, neg_z_e, aug_z_e, ground_mask,
                                             num_items, self.step)
 
@@ -195,14 +188,13 @@ class ModelTrainer(Trainer):
         return loss.item()
 
     def disen_vgsan_loss_fn(self, result, result_exclusive, mu_s, logvar_s,
-                            mu_e, logvar_e, ground, z_s, z_g, z_e, neg_z_e,
+                            mu_e, logvar_e, ground, z_s, z_e, neg_z_e,
                             aug_z_e, ground_mask, num_items, step):
         """Overall loss function of FedDCSR (our method).
         """
 
-        def sim_loss_fn(self, z_s, z_g, neg_z_e, ground_mask):
-            pos = self.discri(z_s, z_g, ground_mask)
-            neg = self.discri(neg_z_e, z_g, ground_mask)
+        def sim_loss_fn(self, z_s, neg_z_e, ground_mask):
+            neg = self.discri(neg_z_e, z_s, ground_mask)
 
             # pos_label, neg_label = torch.ones(pos.size()).to(self.device), \
             #     torch.zeros(neg.size()).to(self.device)
@@ -210,7 +202,7 @@ class ModelTrainer(Trainer):
             #     + self.bce_criterion(neg, neg_label)
 
             # sim_loss = self.jsd_criterion(pos, neg)
-            sim_loss = self.hinge_criterion(pos, neg)
+            sim_loss = self.hinge_criterion(neg)
 
             sim_loss = sim_loss.mean()
 
@@ -237,11 +229,7 @@ class ModelTrainer(Trainer):
                       logvar_e.exp(), dim=-1).reshape(-1)
         kld_loss_e = (kld_loss_e * (ground_mask.reshape(-1))).mean()
 
-        # If it is the first training round
-        if z_g is not None:
-            sim_loss = sim_loss_fn(self, z_s, z_g, neg_z_e, ground_mask)
-        else:
-            sim_loss = 0
+        sim_loss = sim_loss_fn(self, z_s, neg_z_e, ground_mask)
 
         alpha = 1.0  # 1.0 for all scenarios
 

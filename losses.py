@@ -71,11 +71,10 @@ class HingeLoss(nn.Module):
         super(HingeLoss, self).__init__()
         self.margin = margin
 
-    def forward(self, pos, neg):
-        pos = F.sigmoid(pos)
+    def forward(self, neg):
         neg = F.sigmoid(neg)
-        gamma = torch.tensor(self.margin).to(pos.device)
-        return F.relu(gamma - pos + neg)
+        gamma = torch.tensor(self.margin).to(neg.device)
+        return F.relu(gamma + neg)
 
 
 class JSDLoss(torch.nn.Module):
