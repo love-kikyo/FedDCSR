@@ -13,6 +13,7 @@ class Client:
     def __init__(self, model_fn, c_id, args, adj, train_dataset, valid_dataset, test_dataset, num_items_list):
         # Used for computing the mask in self-attention module
         self.num_items = num_items_list[c_id]
+        self.c_id = c_id
         self.domain = train_dataset.domain
         # Used for computing the positional embeddings
         self.max_seq_len = args.max_seq_len
@@ -22,9 +23,6 @@ class Client:
         self.method = args.method
         self.checkpoint_dir = args.checkpoint_dir
         self.model_id = args.id if len(args.id) > 1 else "0" + args.id
-        if args.method == "FedDCSR":
-            self.z_s = self.trainer.z_s
-        self.c_id = c_id
         self.args = args
         self.adj = adj
 
@@ -133,11 +131,11 @@ class Client:
 
     def get_params(self):
         if self.method == "FedDCSR":
-            return copy.deepcopy([self.model.encoder_s_list[self.c_id].state_dict()])
+            return copy.deepcopy(self.model.encoder_s_list[self.c_id].state_dict())
 
     def set_shared_params(self, model_shared_params):
-        for id, shared_params in model_shared_params.items:
-            if id != self.cid:
+        for id, shared_params in model_shared_params.items():
+            if id != self.c_id:
                 self.model.encoder_s_list[id].load_state_dict(shared_params)
 
     def save_params(self):

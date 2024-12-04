@@ -49,7 +49,7 @@ class DisenVGSAN(nn.Module):
         self.item_emb_e_list = nn.ModuleList(
             [nn.Embedding(num_items_list[c_id] + 1, config.hidden_size, padding_idx=num_items_list[c_id]) for i in range(len(num_items_list))])
         self.pos_emb_s_list = nn.ModuleList(
-            [nn.Embedding(args.max_seq_len, config.hidden_size)] for i in range(len(num_items_list)))
+            [nn.Embedding(args.max_seq_len, config.hidden_size) for i in range(len(num_items_list))])
         self.pos_emb_e_list = nn.ModuleList(
             [nn.Embedding(args.max_seq_len, config.hidden_size) for i in range(len(num_items_list))])
         self.GNN_encoder_s_list = nn.ModuleList(
@@ -75,9 +75,9 @@ class DisenVGSAN(nn.Module):
         self.LayerNorm_s_list = nn.ModuleList(
             [nn.LayerNorm(config.hidden_size, eps=1e-12) for i in range(len(num_items_list))])
         self.LayerNorm_e_list = nn.ModuleList(
-            [nn.LayerNorm(config.hidden_size, eps=1e-12) for i in range(num_items_list)])
+            [nn.LayerNorm(config.hidden_size, eps=1e-12) for i in range(len(num_items_list))])
         self.dropout_list = nn.ModuleList(
-            [nn.Dropout(config.dropout_rate) for i in range(num_items_list)])
+            [nn.Dropout(config.dropout_rate) for i in range(len(num_items_list))])
 
     def my_index_select_embedding(self, memory, index):
         tmp = list(index.size()) + [-1]
@@ -170,9 +170,9 @@ class DisenVGSAN(nn.Module):
                 # (batch_size, seq_len, hidden_size)
                 aug_seqs_emb *= self.item_emb_e_list[i].embedding_dim ** 0.5
                 neg_seqs_emb = self.add_position_embedding_e(
-                    neg_seqs, neg_seqs_emb)  # (batch_size, seq_len, hidden_size)
+                    neg_seqs, neg_seqs_emb, i)  # (batch_size, seq_len, hidden_size)
                 aug_seqs_emb = self.add_position_embedding_e(
-                    aug_seqs, aug_seqs_emb)  # (batch_size, seq_len, hidden_size)
+                    aug_seqs, aug_seqs_emb, i)  # (batch_size, seq_len, hidden_size)
                 neg_seqs_emb_list.append(neg_seqs_emb)
                 aug_seqs_emb_list.append(aug_seqs_emb)
 
@@ -230,15 +230,11 @@ class DisenVGSAN(nn.Module):
         if self.training:
             return torch.cat((result, result_pad), dim=-1), \
                 torch.cat((result_exclusive, result_exclusive_pad), dim=-1), \
-                torch.cat(result_shared, result_pad_shared, dim=-1), \
-                torch.cat(result_exclusive_shared, result_exclusive_pad_shared, dim=-1), \
+                torch.cat((result_shared, result_pad_shared), dim=-1), \
+                torch.cat((result_exclusive_shared, result_exclusive_pad_shared), dim=-1), \
                 mu_s_list, logvar_s_list, z_s_list, mu_e_list, logvar_e_list, z_e_list, neg_z_e_list, aug_z_e_list
         else:
-            return torch.cat((result, result_pad), dim=-1), \
-                torch.cat((result_exclusive, result_exclusive_pad), dim=-1), \
-                torch.cat(result_shared, result_pad_shared, dim=-1), \
-                torch.cat(result_exclusive_shared,
-                          result_exclusive_pad_shared, dim=-1)
+            return torch.cat((result_shared, result_pad_shared), dim=-1)
 
     def reparameterization(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
