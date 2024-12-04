@@ -140,16 +140,21 @@ def main():
     train_datasets, valid_datasets, test_datasets, adjs = load_dataset(args)
 
     n_clients = len(args.domains)
+
+    num_items_list = []
+    for i in range(n_clients):
+        num_items_list.append(train_datasets[i].num_items)
+
     clients = [Client(ModelTrainer, c_id, args, adjs[c_id],
                       train_datasets[c_id], valid_datasets[c_id],
-                      test_datasets[c_id]) for c_id in range(n_clients)]
+                      test_datasets[c_id], num_items_list) for c_id in range(n_clients)]
     # Initialize the aggretation weight
     init_clients_weight(clients)
 
     # Save the config of input arguments
     save_config(args)
 
-    server = Server(args, clients[0].get_params())
+    server = Server(args)
 
     run_fl(clients, server, args)
 

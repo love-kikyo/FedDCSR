@@ -10,20 +10,20 @@ from utils.io_utils import ensure_dir
 
 
 class Client:
-    def __init__(self, model_fn, c_id, args, adj, train_dataset, valid_dataset, test_dataset):
+    def __init__(self, model_fn, c_id, args, adj, train_dataset, valid_dataset, test_dataset, num_items_list):
         # Used for computing the mask in self-attention module
-        self.num_items = train_dataset.num_items
+        self.num_items = num_items_list[c_id]
         self.domain = train_dataset.domain
         # Used for computing the positional embeddings
         self.max_seq_len = args.max_seq_len
-        self.trainer = model_fn(args, self.num_items, self.max_seq_len)
+        self.trainer = model_fn(args, self.c_id,
+                                self.max_seq_len, num_items_list)
         self.model = self.trainer.model
         self.method = args.method
         self.checkpoint_dir = args.checkpoint_dir
         self.model_id = args.id if len(args.id) > 1 else "0" + args.id
         if args.method == "FedDCSR":
             self.z_s = self.trainer.z_s
-            self.z_g = self.trainer.z_g
         self.c_id = c_id
         self.args = args
         self.adj = adj
@@ -45,7 +45,7 @@ class Client:
         self.MRR, self.NDCG_5, self.NDCG_10, self.HR_1, self.HR_5, self.HR_10 \
             = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
-    def train_epoch(self, round, args, global_params=None):
+    def train_epoch(self, round, args):
         """Trains one client with its own training data for one epoch.
 
         Args:
@@ -60,8 +60,7 @@ class Client:
             for _, sessions in self.train_dataloader:
                 if ("Fed" in args.method) and args.mu:
                     batch_loss = self.trainer.train_batch(
-                        sessions, self.adj, self.num_items, args,
-                        global_params=global_params)
+                        sessions, self.adj, self.num_items, args)
                 else:
                     batch_loss = self.trainer.train_batch(
                         sessions, self.adj, self.num_items, args)
@@ -133,61 +132,13 @@ class Client:
             valid_entity, HR_10 / valid_entity
 
     def get_params(self):
-        """Returns the model parameters that need to be shared between clients.
-        """
         if self.method == "FedDCSR":
-            return copy.deepcopy([self.model.encoder_s.state_dict()])
-        elif "VGSAN" in self.method:
-            return copy.deepcopy([self.model.encoder.state_dict()])
-        elif "SASRec" in self.method:
-            return copy.deepcopy([self.model.encoder.state_dict()])
-        elif "VSAN" in self.method:
-            return copy.deepcopy([self.model.encoder.state_dict(),
-                                  self.model.decoder.state_dict()])
-        elif "ContrastVAE" in self.method:
-            return copy.deepcopy([self.model.encoder.state_dict(),
-                                  self.model.decoder.state_dict()])
-        elif "CL4SRec" in self.method:
-            return copy.deepcopy([self.model.encoder.state_dict()])
-        elif "DuoRec" in self.method:
-            return copy.deepcopy([self.model.encoder.state_dict()])
+            return copy.deepcopy([self.model.encoder_s_list[self.c_id].state_dict()])
 
-    def get_reps_shared(self):
-        """Returns the user sequence representations that need to be shared
-        between clients.
-        """
-        assert (self.method == "FedDCSR")
-        return copy.deepcopy(self.z_s[0].detach())
-
-    def set_global_params(self, global_params):
-        """Assign the local shared model parameters with global model
-        parameters.
-        """
-        assert (self.method in ["FedDCSR", "FedVGSAN", "FedSASRec", "FedVSAN",
-                                "FedContrastVAE", "FedCL4SRec", "FedDuoRec"])
-        if self.method == "FedDCSR":
-            self.model.encoder_s.load_state_dict(global_params[0])
-        elif self.method == "FedVGSAN":
-            self.model.encoder.load_state_dict(global_params[0])
-            # self.model.decoder.load_state_dict(global_params[1])
-        elif self.method == "FedSASRec":
-            self.model.encoder.load_state_dict(global_params[0])
-        elif self.method == "FedVSAN":
-            self.model.encoder.load_state_dict(global_params[0])
-            self.model.decoder.load_state_dict(global_params[1])
-        elif self.method == "FedContrastVAE":
-            self.model.encoder.load_state_dict(global_params[0])
-            self.model.decoder.load_state_dict(global_params[1])
-        elif self.method == "FedCL4SRec":
-            self.model.encoder.load_state_dict(global_params[0])
-        elif self.method == "FedDuoRec":
-            self.model.encoder.load_state_dict(global_params[0])
-
-    def set_global_reps(self, global_rep):
-        """Copy global user sequence representations to local.
-        """
-        assert (self.method == "FedDCSR")
-        self.z_g[0] = copy.deepcopy(global_rep)
+    def set_shared_params(self, model_shared_params):
+        for id, shared_params in model_shared_params.items:
+            if id != self.cid:
+                self.model.encoder_s_list[id].load_state_dict(shared_params)
 
     def save_params(self):
         method_ckpt_path = os.path.join(self.checkpoint_dir,

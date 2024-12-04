@@ -29,34 +29,17 @@ class Trainer(object):
 
 
 class ModelTrainer(Trainer):
-    def __init__(self, args, num_items, max_seq_len):
+    def __init__(self, args, c_id, max_seq_len, num_items_list):
         self.args = args
         self.method = args.method
+        self.num_items_list = num_items_list
+        self.c_id = c_id
         self.device = "cuda:%s" % args.gpu if args.cuda else "cpu"
         if self.method == "FedDCSR":
-            self.model = DisenVGSAN(num_items, args).to(self.device)
-            # Here we set `self.z_s[:], self.z_g = [None], [None]` so that
-            # we can use `self.z_s[:] = ...`, `self.z_g[:] = ...` to modify
-            # them later.
-            # Note that if we set `self.z_s, self.z_g = None, None`,
-            # then `self.z_s = obj` / `self.z_g = obj` will just refer to a
-            # new object `obj`, rather than modify `self.z_s` / `self.z_g`
-            # itself
-            self.z_s, self.z_g = [None], [None]
+            self.model = DisenVGSAN(c_id, args, num_items_list).to(self.device)
+            self.z_s_list = []
             self.discri = Discriminator(
                 config.hidden_size, max_seq_len).to(self.device)
-        elif "VGSAN" in self.method:
-            self.model = VGSAN(num_items, args).to(self.device)
-        elif "VSAN" in self.method:
-            self.model = VSAN(num_items, args).to(self.device)
-        elif "SASRec" in self.method:
-            self.model = SASRec(num_items, args).to(self.device)
-        elif "CL4SRec" in self.method:
-            self.model = CL4SRec(num_items, args).to(self.device)
-        elif "DuoRec" in self.method:
-            self.model = DuoRec(num_items, args).to(self.device)
-        elif "ContrastVAE" in self.method:
-            self.model = ContrastVAE(num_items, args).to(self.device)
 
         self.bce_criterion = nn.BCEWithLogitsLoss(
             reduction="none").to(self.device)
@@ -76,7 +59,7 @@ class ModelTrainer(Trainer):
             args.optimizer, self.params, args.lr)
         self.step = 0
 
-    def train_batch(self, sessions, adj, num_items, args, global_params=None):
+    def train_batch(self, sessions, adj, num_items, args):
         """Trains the model for one batch.
 
         Args:
@@ -107,102 +90,38 @@ class ModelTrainer(Trainer):
             # `contrast_aug_seqs` is used for computing contrastive infomax
             # loss
             seq, ground, ground_mask, js_neg_seqs, contrast_aug_seqs = sessions
-            result, result_exclusive, mu_s, logvar_s, self.z_s[0], mu_e, \
-                logvar_e, z_e, neg_z_e, aug_z_e = self.model(
-                    seq,
-                neg_seqs=js_neg_seqs,
-                aug_seqs=contrast_aug_seqs)
+            result_local, result_exclusive_local, \
+                result_shared, result_exclusive_shared, \
+                mu_s_list, logvar_s_list, self.z_s_list, mu_e_list, \
+                logvar_e_list, z_e_list, neg_z_e_list, aug_z_e_list = self.model(
+                    seq, neg_seqs=js_neg_seqs, aug_seqs=contrast_aug_seqs)
             # Broadcast in last dim. it well be used to compute `z_g` by
             # federated aggregation later
-            self.z_s[0] *= ground_mask.unsqueeze(-1)
-            loss = self.disen_vgsan_loss_fn(result, result_exclusive, mu_s,
-                                            logvar_s,  mu_e, logvar_e,
-                                            ground, self.z_s[0], self.z_g[0],
-                                            z_e, neg_z_e, aug_z_e, ground_mask,
+            for i in range(len(self.num_items_list)):
+                self.z_s_list[i] *= ground_mask.unsqueeze(-1)
+            loss = self.disen_vgsan_loss_fn(result_local, result_exclusive_local,
+                                            result_shared, result_exclusive_shared,
+                                            mu_s_list, logvar_s_list,  mu_e_list, logvar_e_list,
+                                            ground, self.z_s_list, z_e_list,
+                                            neg_z_e_list, aug_z_e_list, ground_mask,
                                             num_items, self.step)
-
-        elif "VGSAN" in self.method:
-            seq, ground, ground_mask = sessions
-            result, mu, logvar = self.model(seq)
-            loss = self.vgsan_loss_fn(
-                result, mu, logvar, ground, ground_mask, num_items, self.step)
-            if "Fed" in self.method and args.mu:
-                loss += self.prox_reg(
-                    [dict(self.model.encoder.named_parameters())],
-                    global_params, args.mu)
-
-        elif "VSAN" in self.method:
-            seq, ground, ground_mask = sessions
-            result, mu, logvar = self.model(seq)
-            loss = self.vsan_loss_fn(
-                result, mu, logvar, ground, ground_mask, num_items, self.step)
-            if self.method == "FedVSAN" and args.mu:
-                loss += self.prox_reg(
-                    [dict(self.model.encoder.named_parameters())],
-                    global_params, args.mu)
-
-        elif "SASRec" in self.method:
-            seq, ground, ground_mask = sessions
-            # result： (batch_size, seq_len, hidden_size)
-            result = self.model(seq)
-            loss = self.sasrec_loss_fn(result, ground, ground_mask, num_items)
-            if "Fed" in self.method and args.mu:
-                loss += self.prox_reg(
-                    [dict(self.model.encoder.named_parameters())],
-                    global_params, args.mu)
-
-        elif "CL4SRec" in self.method:
-            seq, ground, ground_mask, aug_seqs1, aug_seqs2 = sessions
-            # result： (batch_size, seq_len, hidden_size)
-            result, aug_seqs_fea1, aug_seqs_fea2 = self.model(
-                seq, aug_seqs1=aug_seqs1, aug_seqs2=aug_seqs2)
-            loss = self.cl4srec_loss_fn(
-                result, aug_seqs_fea1, aug_seqs_fea2, ground, ground_mask,
-                num_items)
-            if "Fed" in self.method and args.mu:
-                loss += self.prox_reg(
-                    [dict(self.model.encoder.named_parameters())],
-                    global_params, args.mu)
-
-        elif "DuoRec" in self.method:
-            seq, ground, ground_mask, aug_seqs = sessions
-            # result： (batch_size, seq_len, hidden_size)
-            result, seqs_fea, aug_seqs_fea = self.model(seq, aug_seqs=aug_seqs)
-            loss = self.duorec_loss_fn(
-                result, seqs_fea, aug_seqs_fea, ground, ground_mask, num_items)
-            if "Fed" in self.method and args.mu:
-                loss += self.prox_reg(
-                    [dict(self.model.encoder.named_parameters())],
-                    global_params, args.mu)
-
-        elif "ContrastVAE" in self.method:
-            seq, ground, ground_mask, aug_seqs = sessions
-            # result： (batch_size, seq_len, hidden_size)
-            result, aug_result, mu, logvar, z, aug_mu, aug_logvar, aug_z, \
-                alpha = self.model(seq, aug_seqs=aug_seqs)
-            loss = self.contrastvae_loss_fn(result, aug_result, mu, logvar, z,
-                                            aug_mu, aug_logvar, aug_z, alpha,
-                                            ground, ground_mask, num_items,
-                                            self.step)
-            if "Fed" in self.method and args.mu:
-                loss += self.prox_reg(
-                    [dict(self.model.encoder.named_parameters())],
-                    global_params, args.mu)
 
         loss.backward()
         self.optimizer.step()
         self.step += 1
         return loss.item()
 
-    def disen_vgsan_loss_fn(self, result, result_exclusive, mu_s, logvar_s,
-                            mu_e, logvar_e, ground, z_s, z_g, z_e, neg_z_e,
-                            aug_z_e, ground_mask, num_items, step):
+    def disen_vgsan_loss_fn(self, result_local, result_exclusive_local,
+                            result_shared, result_exclusive_shared,
+                            mu_s_list, logvar_s_list, mu_e_list, logvar_e_list,
+                            ground, z_s_list, z_e_list,
+                            neg_z_e_list, aug_z_e_list, ground_mask,
+                            num_items, step):
         """Overall loss function of FedDCSR (our method).
         """
 
-        def sim_loss_fn(self, z_s, z_g, neg_z_e, ground_mask):
-            pos = self.discri(z_s, z_g, ground_mask)
-            neg = self.discri(neg_z_e, z_g, ground_mask)
+        def sim_loss_fn(self, z_s, neg_z_e, ground_mask):
+            neg = self.discri(neg_z_e, z_s, ground_mask)
 
             # pos_label, neg_label = torch.ones(pos.size()).to(self.device), \
             #     torch.zeros(neg.size()).to(self.device)
@@ -210,38 +129,72 @@ class ModelTrainer(Trainer):
             #     + self.bce_criterion(neg, neg_label)
 
             # sim_loss = self.jsd_criterion(pos, neg)
-            sim_loss = self.hinge_criterion(pos, neg)
+            sim_loss = self.hinge_criterion(neg)
 
             sim_loss = sim_loss.mean()
 
             return sim_loss
 
-        recons_loss = self.cs_criterion(
-            result.reshape(-1, num_items + 1),
+        recons_loss_local = self.cs_criterion(
+            result_local.reshape(-1, num_items + 1),
             ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss = (recons_loss * (ground_mask.reshape(-1))).mean()
+        recons_loss_local = (recons_loss_local *
+                             (ground_mask.reshape(-1))).mean()
 
-        recons_loss_exclusive = self.cs_criterion(
-            result_exclusive.reshape(-1, num_items + 1),
+        recons_loss_exclusive_local = self.cs_criterion(
+            result_exclusive_local.reshape(-1, num_items + 1),
             ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss_exclusive = (
-            recons_loss_exclusive * (ground_mask.reshape(-1))).mean()
+        recons_loss_exclusive_local = (
+            recons_loss_exclusive_local * (ground_mask.reshape(-1))).mean()
 
-        kld_loss_s = -0.5 * \
-            torch.sum(1 + logvar_s - mu_s ** 2 -
-                      logvar_s.exp(), dim=-1).reshape(-1)
-        kld_loss_s = (kld_loss_s * (ground_mask.reshape(-1))).mean()
+        recons_loss_shared = self.cs_criterion(
+            result_shared.reshape(-1, num_items + 1),
+            ground.reshape(-1))  # (batch_size * seq_len, )
+        recons_loss_shared = (recons_loss_shared *
+                              (ground_mask.reshape(-1))).mean()
 
-        kld_loss_e = -0.5 * \
-            torch.sum(1 + logvar_e - mu_e ** 2 -
-                      logvar_e.exp(), dim=-1).reshape(-1)
-        kld_loss_e = (kld_loss_e * (ground_mask.reshape(-1))).mean()
+        recons_loss_exclusive_shared = self.cs_criterion(
+            result_exclusive_shared.reshape(-1, num_items + 1),
+            ground.reshape(-1))  # (batch_size * seq_len, )
+        recons_loss_exclusive_shared = (
+            recons_loss_exclusive_shared * (ground_mask.reshape(-1))).mean()
 
-        # If it is the first training round
-        if z_g is not None:
-            sim_loss = sim_loss_fn(self, z_s, z_g, neg_z_e, ground_mask)
-        else:
-            sim_loss = 0
+        kld_loss_s_local = -0.5 * \
+            torch.sum(1 + logvar_s_list[self.c_id] - mu_s_list[self.c_id] ** 2 -
+                      logvar_s_list[self.c_id].exp(), dim=-1).reshape(-1)
+        kld_loss_s_local = (kld_loss_s_local *
+                            (ground_mask.reshape(-1))).mean()
+
+        kld_loss_e_local = -0.5 * \
+            torch.sum(1 + logvar_e_list[self.c_id] - mu_e_list[self.c_id] ** 2 -
+                      logvar_e_list[self.c_id].exp(), dim=-1).reshape(-1)
+        kld_loss_e_local = (kld_loss_e_local *
+                            (ground_mask.reshape(-1))).mean()
+
+        kld_loss_s_shared = 0
+        kld_loss_e_shared = 0
+        for i in range(len(self.num_items_list)):
+            kld_loss_s = -0.5 * \
+                torch.sum(1 + logvar_s_list[i] - mu_s_list[i] ** 2 -
+                          logvar_s_list[i].exp(), dim=-1).reshape(-1)
+            kld_loss_s = (kld_loss_s * (ground_mask.reshape(-1))).mean()
+
+            kld_loss_e = -0.5 * \
+                torch.sum(1 + logvar_e_list[i] - mu_e_list[i] ** 2 -
+                          logvar_e_list[i].exp(), dim=-1).reshape(-1)
+            kld_loss_e = (kld_loss_e * (ground_mask.reshape(-1))).mean()
+            kld_loss_s_shared += kld_loss_s
+            kld_loss_e_shared += kld_loss_e
+        kld_loss_s_shared /= len(self.num_items_list)
+        kld_loss_e_shared /= len(self.num_items_list)
+
+        sim_loss_local = sim_loss_fn(
+            self, z_s_list[self.c_id], neg_z_e_list[self.c_id], ground_mask)
+        sim_loss_shared = 0
+        for i in range(len(self.num_items_list)):
+            sim_loss_shared += sim_loss_fn(self,
+                                           z_s_list[i], neg_z_e_list[i], ground_mask)
+        sim_loss_shared /= len(self.num_items_list)
 
         alpha = 1.0  # 1.0 for all scenarios
 
@@ -254,160 +207,27 @@ class ModelTrainer(Trainer):
 
         lam = 1.0  # 1.0 for FKCB and BMG, 0.1 for SGH
 
-        user_representation1 = z_e[:, -1, :]
-        user_representation2 = aug_z_e[:, -1, :]
-        contrastive_loss = self.cl_criterion(
+        user_representation1 = z_e_list[self.c_id][:, -1, :]
+        user_representation2 = aug_z_e_list[self.c_id][:, -1, :]
+        contrastive_loss_local = self.cl_criterion(
             user_representation1, user_representation2)
-        contrastive_loss = contrastive_loss.mean()
+        contrastive_loss_local = contrastive_loss_local.mean()
+        contrastive_loss_shared = 0
+        for i in range(len(self.num_items_list)):
+            user_representation1 = z_e_list[i][:, -1, :]
+            user_representation2 = aug_z_e_list[i][:, -1, :]
+            contrastive_loss = self.cl_criterion(
+                user_representation1, user_representation2)
+            contrastive_loss_shared += contrastive_loss.mean()
+        contrastive_loss_shared /= len(self.num_items_list)
 
-        loss = alpha * (recons_loss + kld_weight * kld_loss_s + kld_weight
-                        * kld_loss_e) \
-            + beta * sim_loss \
-            + gamma * recons_loss_exclusive \
-            + lam * contrastive_loss
+        loss = alpha * ((recons_loss_local + recons_loss_shared) +
+                        kld_weight * (kld_loss_s_local + kld_loss_s_shared) +
+                        kld_weight * (kld_loss_e_shared + kld_loss_e_shared)) \
+            + beta * (sim_loss_local + sim_loss_shared) \
+            + gamma * (recons_loss_exclusive_local + recons_loss_exclusive_shared) \
+            + lam * (contrastive_loss_local + contrastive_loss_shared)
 
-        return loss
-
-    def vgsan_loss_fn(self, result, mu, logvar, ground, ground_mask, num_items,
-                      step):
-        """Compute kl divergence, reconstruction.
-        result: (batch_size, seq_len, hidden_size),
-        mu: (batch_size, seq_len, hidden_size),
-        log_var: (batch_size, seq_len, hidden_size),
-        ground: (batch_size, seq_len)
-        ground_mask: (batch_size, seq_len)
-        """
-        recons_loss = self.cs_criterion(
-            result.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss = (recons_loss * (ground_mask.reshape(-1))).mean()
-
-        kld_loss = -0.5 * torch.sum(1 + logvar -
-                                    mu ** 2 - logvar.exp(), dim=-1).reshape(-1)
-        kld_loss = (kld_loss * (ground_mask.reshape(-1))).mean()
-
-        kld_weight = self.kl_anneal_function(
-            self.args.anneal_cap, step, self.args.total_annealing_step)
-
-        loss = recons_loss + kld_weight * kld_loss
-        return loss
-
-    def vsan_loss_fn(self, result, mu, logvar, ground, ground_mask, num_items,
-                     step):
-        """Compute kl divergence, reconstruction.
-        result: (batch_size, seq_len, hidden_size),
-        mu: (batch_size, seq_len, hidden_size),
-        log_var: (batch_size, seq_len, hidden_size),
-        ground: (batch_size, seq_len),
-        ground_mask: (batch_size, seq_len)
-        """
-        recons_loss = self.cs_criterion(
-            result.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss = (recons_loss * (ground_mask.reshape(-1))).mean()
-
-        kld_loss = -0.5 * torch.sum(1 + logvar -
-                                    mu ** 2 - logvar.exp(), dim=-1).reshape(-1)
-        kld_loss = (kld_loss * (ground_mask.reshape(-1))).mean()
-
-        kld_weight = self.kl_anneal_function(
-            self.args.anneal_cap, step, self.args.total_annealing_step)
-
-        loss = recons_loss + kld_weight * kld_loss
-        return loss
-
-    def sasrec_loss_fn(self, result, ground, ground_mask, num_items):
-        """Compute cross entropy loss for next item prediction.
-        result: (batch_size, seq_len, hidden_size),
-        ground: (batch_size, seq_len),
-        ground_mask: (batch_size, seq_len)
-        """
-        loss = self.cs_criterion(
-            result.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # （batch_size * seq_len, ）
-        loss = 1.0 * (loss * (ground_mask.reshape(-1))).mean()
-        return loss
-
-    def duorec_loss_fn(self, result, seqs_fea, aug_seqs_fea, ground,
-                       ground_mask, num_items):
-        recons_loss = self.cs_criterion(
-            result.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss = (recons_loss * (ground_mask.reshape(-1))).mean()
-
-        user_representation1 = seqs_fea[:, -1, :]
-        user_representation2 = aug_seqs_fea[:, -1, :]
-        contrastive_loss = self.cl_criterion(
-            user_representation1, user_representation2)
-        contrastive_loss = contrastive_loss.mean()
-
-        lam = 0.1  # 0.1 is the best
-        loss = recons_loss + lam * contrastive_loss
-        return loss
-
-    def cl4srec_loss_fn(self, result, aug_seqs_fea1, aug_seqs_fea2, ground,
-                        ground_mask, num_items):
-        recons_loss = self.cs_criterion(
-            result.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss = (recons_loss * (ground_mask.reshape(-1))).mean()
-
-        user_representation1 = aug_seqs_fea1[:, -1, :]
-        user_representation2 = aug_seqs_fea2[:, -1, :]
-        contrastive_loss = self.cl_criterion(
-            user_representation1, user_representation2)
-        contrastive_loss = contrastive_loss.mean()
-
-        lam = 0.1  # 0.1 is the best
-        loss = recons_loss + lam * contrastive_loss
-        return loss
-
-    def contrastvae_loss_fn(self, result, aug_result, mu, logvar, z, aug_mu,
-                            aug_logvar, aug_z, alpha, ground, ground_mask,
-                            num_items, step):
-        recons_loss = self.cs_criterion(
-            result.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss = (recons_loss * (ground_mask.reshape(-1))).mean()
-        aug_recons_loss = self.cs_criterion(
-            aug_result.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # (batch_size * seq_len, )
-        aug_recons_loss = (aug_recons_loss * (ground_mask.reshape(-1))).mean()
-
-        kld_loss = -0.5 * torch.sum(1 + logvar -
-                                    mu ** 2 - logvar.exp(), dim=-1).reshape(-1)
-        kld_loss = (kld_loss * (ground_mask.reshape(-1))).mean()
-        aug_kld_loss = -0.5 * \
-            torch.sum(1 + aug_logvar - aug_mu ** 2 -
-                      aug_logvar.exp(), dim=-1).reshape(-1)
-        aug_kld_loss = (aug_kld_loss * (ground_mask.reshape(-1))).mean()
-
-        kld_weight = self.kl_anneal_function(
-            self.args.anneal_cap, step, self.args.total_annealing_step)
-
-        lam = 1.0  # 1.0 is the best
-
-        mask = ground_mask.float().sum(-1).unsqueeze(-1)\
-            .repeat(1, ground_mask.size(-1))
-        mask = 1 / mask
-        mask = ground_mask * mask  # For mean
-        mask = ground_mask.unsqueeze(-1).repeat(1, 1, z.size(-1))
-        # user representation1: (batch_size, hidden_size)
-        # user_representation2: (batch_size, hidden_size)
-        user_representation1 = (z * mask).sum(1)
-        user_representation2 = (aug_z * mask).sum(1)
-
-        contrastive_loss = self.cl_criterion(
-            user_representation1, user_representation2)
-        contrastive_loss = contrastive_loss.mean()
-
-        loss = recons_loss + aug_recons_loss + kld_weight * (kld_loss
-                                                             + aug_kld_loss) \
-            + lam * contrastive_loss
-        # Compute priorKL loss
-        if alpha:
-            adaptive_alpha_loss = priorKL(alpha).mean()
-            loss += adaptive_alpha_loss
         return loss
 
     def kl_anneal_function(self, anneal_cap, step, total_annealing_step):

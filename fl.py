@@ -59,25 +59,22 @@ def run_fl(clients, server, args):
             for c_id in tqdm(random_cids, ascii=True):
                 if "Fed" in args.method:
                     # Restore global parameters to client's model
-                    clients[c_id].set_global_params(server.get_global_params())
-                    if args.method == "FedDCSR":
-                        clients[c_id].set_global_reps(server.get_global_reps())
+                    clients[c_id].set_shared_params(
+                        server.get_model_shared_params())
 
                 # Train one client
                 clients[c_id].train_epoch(
-                    round, args, global_params=server.global_params)
+                    round, args)
 
             if "Fed" in args.method:
-                server.aggregate_params(clients, random_cids)
-                if args.method == "FedDCSR":
-                    server.aggregate_reps(clients, random_cids)
+                server.update_model_shared_params(clients, random_cids)
 
             if round % args.eval_interval == 0:
                 eval_logs = {}
                 for c_id in tqdm(range(n_clients), ascii=True):
                     if "Fed" in args.method:
-                        clients[c_id].set_global_params(
-                            server.get_global_params())
+                        clients[c_id].set_shared_params(
+                            server.get_model_shared_params())
                     if c_id in random_cids:
                         eval_log = clients[c_id].evaluation(mode="valid")
                     else:
