@@ -12,6 +12,7 @@ from models.cl4srec.cl4srec_model import CL4SRec
 from models.duorec.duorec_model import DuoRec
 from utils import train_utils
 from losses import NCELoss, HingeLoss, JSDLoss, Discriminator, priorKL
+torch.autograd.set_detect_anomaly(True)
 
 
 class Trainer(object):
@@ -37,11 +38,6 @@ class ModelTrainer(Trainer):
         self.device = "cuda:%s" % args.gpu if args.cuda else "cpu"
         if self.method == "FedDCSR":
             self.model = DisenVGSAN(c_id, args, num_items_list).to(self.device)
-            self.z_s_list = []
-            self.discri = Discriminator(
-                config.hidden_size, max_seq_len).to(self.device)
-            self.discri_shared = Discriminator(
-                config.hidden_size, max_seq_len * (len(self.num_items_list) - 1)).to(self.device)
 
         self.bce_criterion = nn.BCEWithLogitsLoss(
             reduction="none").to(self.device)
@@ -53,9 +49,7 @@ class ModelTrainer(Trainer):
         self.hinge_criterion = HingeLoss(margin=0.3).to(self.device)
 
         if args.method == "FedDCSR":
-            self.params = list(self.model.parameters()) + \
-                list(self.discri.parameters()) + \
-                list(self.discri_shared.parameters())
+            self.params = list(self.model.parameters())
         else:
             self.params = list(self.model.parameters())
         self.optimizer = train_utils.get_optimizer(
@@ -95,17 +89,14 @@ class ModelTrainer(Trainer):
             seq, ground, ground_mask, js_neg_seqs, contrast_aug_seqs = sessions
             result_local, result_exclusive_local, \
                 result_shared, result_exclusive_shared, \
-                mu_s_list, logvar_s_list, self.z_s_list, mu_e_list, \
-                logvar_e_list, z_e_list, neg_z_e_list, aug_z_e_list = self.model(
+                mu_e_list, logvar_e_list, z_e_list, neg_z_e_list, aug_z_e_list = self.model(
                     seq, neg_seqs=js_neg_seqs, aug_seqs=contrast_aug_seqs)
             # Broadcast in last dim. it well be used to compute `z_g` by
             # federated aggregation later
-            for i in range(len(self.num_items_list)):
-                self.z_s_list[i] *= ground_mask.unsqueeze(-1)
             loss = self.disen_vgsan_loss_fn(result_local, result_exclusive_local,
                                             result_shared, result_exclusive_shared,
-                                            mu_s_list, logvar_s_list,  mu_e_list, logvar_e_list,
-                                            ground, self.z_s_list, z_e_list,
+                                            mu_e_list, logvar_e_list,
+                                            ground, z_e_list,
                                             neg_z_e_list, aug_z_e_list, ground_mask,
                                             num_items, self.step)
 
@@ -116,31 +107,12 @@ class ModelTrainer(Trainer):
 
     def disen_vgsan_loss_fn(self, result_local, result_exclusive_local,
                             result_shared, result_exclusive_shared,
-                            mu_s_list, logvar_s_list, mu_e_list, logvar_e_list,
-                            ground, z_s_list, z_e_list,
+                            mu_e_list, logvar_e_list,
+                            ground, z_e_list,
                             neg_z_e_list, aug_z_e_list, ground_mask,
                             num_items, step):
         """Overall loss function of FedDCSR (our method).
         """
-
-        def sim_loss_fn(self, z_s, neg_z_e, ground_mask):
-            neg = self.discri(neg_z_e, z_s, ground_mask)
-
-            # pos_label, neg_label = torch.ones(pos.size()).to(self.device), \
-            #     torch.zeros(neg.size()).to(self.device)
-            # sim_loss = self.bce_criterion(pos, pos_label) \
-            #     + self.bce_criterion(neg, neg_label)
-
-            # sim_loss = self.jsd_criterion(pos, neg)
-            sim_loss = self.hinge_criterion(neg)
-            sim_loss = sim_loss.mean()
-            return sim_loss
-
-        def sim_loss_fn_shared(self, z_s, neg_z_e, ground_mask):
-            neg = self.discri_shared(neg_z_e, z_s, ground_mask)
-            sim_loss = self.hinge_criterion(neg)
-            sim_loss = sim_loss.mean()
-            return sim_loss
 
         recons_loss_local = self.cs_criterion(
             result_local.reshape(-1, num_items + 1),
@@ -166,59 +138,26 @@ class ModelTrainer(Trainer):
         recons_loss_exclusive_shared = (
             recons_loss_exclusive_shared * (ground_mask.reshape(-1))).mean()
 
-        kld_loss_s_local = -0.5 * \
-            torch.sum(1 + logvar_s_list[self.c_id] - mu_s_list[self.c_id] ** 2 -
-                      logvar_s_list[self.c_id].exp(), dim=-1).reshape(-1)
-        kld_loss_s_local = (kld_loss_s_local *
-                            (ground_mask.reshape(-1))).mean()
-
         kld_loss_e_local = -0.5 * \
             torch.sum(1 + logvar_e_list[self.c_id] - mu_e_list[self.c_id] ** 2 -
                       logvar_e_list[self.c_id].exp(), dim=-1).reshape(-1)
         kld_loss_e_local = (kld_loss_e_local *
                             (ground_mask.reshape(-1))).mean()
 
-        kld_loss_s_shared = 0
         kld_loss_e_shared = 0
         for i in range(len(self.num_items_list)):
             if i != self.c_id:
-                kld_loss_s = -0.5 * \
-                    torch.sum(1 + logvar_s_list[i] - mu_s_list[i] ** 2 -
-                              logvar_s_list[i].exp(), dim=-1).reshape(-1)
-                kld_loss_s = (kld_loss_s * (ground_mask.reshape(-1))).mean()
-
                 kld_loss_e = -0.5 * \
                     torch.sum(1 + logvar_e_list[i] - mu_e_list[i] ** 2 -
                               logvar_e_list[i].exp(), dim=-1).reshape(-1)
                 kld_loss_e = (kld_loss_e * (ground_mask.reshape(-1))).mean()
-                kld_loss_s_shared += kld_loss_s
                 kld_loss_e_shared += kld_loss_e
-        kld_loss_s_shared /= len(self.num_items_list) - 1
         kld_loss_e_shared /= len(self.num_items_list) - 1
-
-        sim_loss_local = sim_loss_fn(
-            self, z_s_list[self.c_id], neg_z_e_list[self.c_id], ground_mask)
-
-        z_s_cat_list = []
-        neg_z_e_cat_list = []
-        ground_mask_cat_list = []
-        for i in range(len(self.num_items_list)):
-            if i != self.c_id:
-                z_s_cat_list.append(z_s_list[i])
-                neg_z_e_cat_list.append(neg_z_e_list[i])
-                ground_mask_cat_list.append(ground_mask)
-        z_s_cat = torch.cat(z_s_cat_list, dim=1)
-        neg_z_e_cat = torch.cat(neg_z_e_cat_list, dim=1)
-        ground_mask_cat = torch.cat(ground_mask_cat_list, dim=1)
-        sim_loss_shared = sim_loss_fn_shared(
-            self, z_s_cat, neg_z_e_cat, ground_mask_cat)
 
         alpha = 1.0  # 1.0 for all scenarios
 
         kld_weight = self.kl_anneal_function(
             self.args.anneal_cap, step, self.args.total_annealing_step)
-
-        beta = 2.0  # 2.0 for FKCB, 0.5 for BMG and SGH
 
         gamma = 1.0  # 1.0 for all scenarios
 
@@ -240,9 +179,7 @@ class ModelTrainer(Trainer):
         contrastive_loss_shared /= len(self.num_items_list) - 1
 
         loss = alpha * ((recons_loss_local + recons_loss_shared) +
-                        kld_weight * (kld_loss_s_local + kld_loss_s_shared) +
                         kld_weight * (kld_loss_e_local + kld_loss_e_shared)) \
-            + beta * (sim_loss_local + sim_loss_shared) \
             + gamma * (recons_loss_exclusive_local + recons_loss_exclusive_shared) \
             + lam * (contrastive_loss_local + contrastive_loss_shared)
 

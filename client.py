@@ -145,12 +145,12 @@ class Client:
 
     def get_params(self):
         if self.method == "FedDCSR":
-            return copy.deepcopy(self.model.encoder_s_list[self.c_id].state_dict())
+            return copy.deepcopy(self.model.encoder_e_list[self.c_id].state_dict())
 
     def set_shared_params(self, model_shared_params):
         for id, shared_params in model_shared_params.items():
             if id != self.c_id:
-                self.model.encoder_s_list[id].load_state_dict(shared_params)
+                self.model.encoder_e_list[id].load_state_dict(shared_params)
 
     def save_params(self):
         method_ckpt_path = os.path.join(self.checkpoint_dir,

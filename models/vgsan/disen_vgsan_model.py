@@ -44,21 +44,13 @@ class DisenVGSAN(nn.Module):
         self.c_id = c_id
         # Item embeddings cannot be shared between clients, because the number
         # of items in each domain is different.
-        self.item_emb_s_list = nn.ModuleList(
-            [nn.Embedding(num_items_list[c_id] + 1, config.hidden_size, padding_idx=num_items_list[c_id]) for i in range(len(num_items_list))])
         self.item_emb_e_list = nn.ModuleList(
             [nn.Embedding(num_items_list[c_id] + 1, config.hidden_size, padding_idx=num_items_list[c_id]) for i in range(len(num_items_list))])
-        self.pos_emb_s_list = nn.ModuleList(
-            [nn.Embedding(args.max_seq_len, config.hidden_size) for i in range(len(num_items_list))])
         self.pos_emb_e_list = nn.ModuleList(
             [nn.Embedding(args.max_seq_len, config.hidden_size) for i in range(len(num_items_list))])
-        self.GNN_encoder_s_list = nn.ModuleList(
-            [GCNLayer(args) for i in range(len(num_items_list))])
         self.GNN_encoder_e_list = nn.ModuleList(
             [GCNLayer(args) for i in range(len(num_items_list))])
 
-        self.encoder_s_list = nn.ModuleList(
-            [Encoder(num_items_list[i], args) for i in range(len(num_items_list))])
         self.encoder_e_list = nn.ModuleList(
             [Encoder(num_items_list[i], args) for i in range(len(num_items_list))])
         self.decoder_list = nn.ModuleList(
@@ -69,11 +61,10 @@ class DisenVGSAN(nn.Module):
         self.linear_pad_local = nn.Linear(config.hidden_size, 1)
 
         self.linear_shared = nn.Linear(
-            config.hidden_size, num_items_list[c_id])
-        self.linear_pad_shared = nn.Linear(config.hidden_size, 1)
+            config.hidden_size * len(self.num_items_list), num_items_list[c_id])
+        self.linear_pad_shared = nn.Linear(
+            config.hidden_size * len(self.num_items_list), 1)
 
-        self.LayerNorm_s_list = nn.ModuleList(
-            [nn.LayerNorm(config.hidden_size, eps=1e-12) for i in range(len(num_items_list))])
         self.LayerNorm_e_list = nn.ModuleList(
             [nn.LayerNorm(config.hidden_size, eps=1e-12) for i in range(len(num_items_list))])
         self.dropout_list = nn.ModuleList(
@@ -94,19 +85,12 @@ class DisenVGSAN(nn.Module):
         return ans
 
     def graph_convolution(self, adj):
-        self.item_graph_embs_s_list = []
         self.item_graph_embs_e_list = []
         for i in range(len(self.num_items_list)):
-            item_index_s = torch.arange(
-                0, self.item_emb_s_list[i].num_embeddings, 1).to(self.device)
             self.item_index_e = torch.arange(
                 0, self.item_emb_e_list[i].num_embeddings, 1).to(self.device)
-            item_embs_s = self.my_index_select_embedding(
-                self.item_emb_s_list[i], item_index_s)
             item_embs_e = self.my_index_select_embedding(
                 self.item_emb_e_list[i], self.item_index_e)
-            self.item_graph_embs_s_list.append(
-                self.GNN_encoder_s_list[i](item_embs_s, adj))
             self.item_graph_embs_e_list.append(
                 self.GNN_encoder_e_list[i](item_embs_e, adj))
 
@@ -116,14 +100,6 @@ class DisenVGSAN(nn.Module):
             seq_length, dtype=torch.long, device=seqs.device)
         position_ids = position_ids.unsqueeze(0).expand_as(seqs)
         return position_ids
-
-    def add_position_embedding_s(self, seqs, seq_embeddings, c_id):
-        position_ids = self.get_position_ids(seqs)
-        position_embeddings = self.pos_emb_s_list[c_id](position_ids)
-        seq_embeddings += position_embeddings
-        seq_embeddings = self.LayerNorm_s_list[c_id](seq_embeddings)
-        seq_embeddings = self.dropout_list[c_id](seq_embeddings)
-        return seq_embeddings  # (batch_size, seq_len, hidden_size)
 
     def add_position_embedding_e(self, seqs, seq_embeddings, c_id):
         position_ids = self.get_position_ids(seqs)
@@ -137,22 +113,14 @@ class DisenVGSAN(nn.Module):
         # `item_graph_embs` stores the embeddings of all items.
         # Here we need to select the embeddings of items appearing in the
         # sequence
-        seqs_emb_s_list = []
         seqs_emb_e_list = []
         for i in range(len(self.num_items_list)):
-            seqs_emb_s = self.my_index_select(
-                self.item_graph_embs_s_list[i], seqs) + self.item_emb_s_list[i](seqs)
             seqs_emb_e = self.my_index_select(
                 self.item_graph_embs_e_list[i], seqs) + self.item_emb_e_list[i](seqs)
             # (batch_size, seq_len, hidden_size)
-            seqs_emb_s *= self.item_emb_s_list[i].embedding_dim ** 0.5
-            # (batch_size, seq_len, hidden_size)
             seqs_emb_e *= self.item_emb_e_list[i].embedding_dim ** 0.5
-            seqs_emb_s = self.add_position_embedding_s(
-                seqs, seqs_emb_s, i)  # (batch_size, seq_len, hidden_size)
             seqs_emb_e = self.add_position_embedding_e(
                 seqs, seqs_emb_e, i)  # (batch_size, seq_len, hidden_size)
-            seqs_emb_s_list.append(seqs_emb_s)
             seqs_emb_e_list.append(seqs_emb_e)
 
         # Here is a shortcut operation that adds up the embeddings of items
@@ -175,16 +143,6 @@ class DisenVGSAN(nn.Module):
                     aug_seqs, aug_seqs_emb, i)  # (batch_size, seq_len, hidden_size)
                 neg_seqs_emb_list.append(neg_seqs_emb)
                 aug_seqs_emb_list.append(aug_seqs_emb)
-
-        mu_s_list = []
-        logvar_s_list = []
-        z_s_list = []
-        for i in range(len(self.num_items_list)):
-            mu_s, logvar_s = self.encoder_s_list[i](seqs_emb_s_list[i], seqs)
-            z_s = self.reparameterization(mu_s, logvar_s)
-            mu_s_list.append(mu_s)
-            logvar_s_list.append(logvar_s)
-            z_s_list.append(z_s)
 
         if self.training:
             neg_z_e_list = []
@@ -210,24 +168,22 @@ class DisenVGSAN(nn.Module):
             logvar_e_list.append(logvar_e)
             z_e_list.append(z_e)
 
-        result = self.linear_local(z_s_list[self.c_id] + z_e_list[self.c_id])
-        result_pad = self.linear_pad_local(
-            z_s_list[self.c_id] + z_e_list[self.c_id])
+        result = self.linear_local(z_e_list[self.c_id])
+        result_pad = self.linear_pad_local(z_e_list[self.c_id])
         # reconstructed_seq_exclusive = self.decoder(z_e)
         result_exclusive = self.linear_local(z_e_list[self.c_id])
         result_exclusive_pad = self.linear_pad_local(z_e_list[self.c_id])
 
-        z_e = torch.zeros_like(z_e_list[0])
-        z_s = torch.zeros_like(z_s_list[0])
+        z_e = []
         for i in range(len(self.num_items_list)):
             if i != self.c_id:
-                z_e = z_e + z_e_list[i]
-                z_s = z_s + z_s_list[i]
+                z_e.append(z_e_list[i])
             else:
-                z_e = z_e + z_e_list[i].detach()
-                z_s = z_s + z_s_list[i].detach()
-        result_shared = self.linear_shared(z_s + z_e)
-        result_pad_shared = self.linear_pad_shared(z_s + z_e)
+                z_e.append(z_e_list[i].detach())
+        z_e = torch.cat(z_e, dim=-1)
+
+        result_shared = self.linear_shared(z_e)
+        result_pad_shared = self.linear_pad_shared(z_e)
         result_exclusive_shared = self.linear_shared(z_e)
         result_exclusive_pad_shared = self.linear_pad_shared(z_e)
 
@@ -236,7 +192,7 @@ class DisenVGSAN(nn.Module):
                 torch.cat((result_exclusive, result_exclusive_pad), dim=-1), \
                 torch.cat((result_shared, result_pad_shared), dim=-1), \
                 torch.cat((result_exclusive_shared, result_exclusive_pad_shared), dim=-1), \
-                mu_s_list, logvar_s_list, z_s_list, mu_e_list, logvar_e_list, z_e_list, neg_z_e_list, aug_z_e_list
+                mu_e_list, logvar_e_list, z_e_list, neg_z_e_list, aug_z_e_list
         else:
             return torch.cat((result, result_pad), dim=-1), \
                 torch.cat((result_shared, result_pad_shared), dim=-1)
