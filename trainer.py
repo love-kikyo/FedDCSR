@@ -289,17 +289,28 @@ class ModelTrainer(Trainer):
         # neg_list: (batch_size, num_test_neg)
         seq, ground_truth, neg_list = sessions
         # result: (batch_size, seq_len, num_items)
-        result = self.model(seq)
+        result_local, result_shared = self.model(seq)
 
-        pred = []
-        for id in range(len(result)):
+        pred_local = []
+        pred_shared = []
+        for id in range(len(result_local)):
             # result[id, -1]: (num_items, )
-            score = result[id, -1]
+            score = result_local[id, -1]
             cur = score[ground_truth[id]]
             # score_larger = (score[neg_list[id]] > (cur + 0.00001))\
             # .data.cpu().numpy()
             score_larger = (score[neg_list[id]] > (cur)).data.cpu().numpy()
             true_item_rank = np.sum(score_larger) + 1
-            pred.append(true_item_rank)
+            pred_local.append(true_item_rank)
 
-        return pred
+        for id in range(len(result_shared)):
+            # result[id, -1]: (num_items, )
+            score = result_shared[id, -1]
+            cur = score[ground_truth[id]]
+            # score_larger = (score[neg_list[id]] > (cur + 0.00001))\
+            # .data.cpu().numpy()
+            score_larger = (score[neg_list[id]] > (cur)).data.cpu().numpy()
+            true_item_rank = np.sum(score_larger) + 1
+            pred_shared.append(true_item_rank)
+
+        return pred_local, pred_shared

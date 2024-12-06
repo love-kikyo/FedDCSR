@@ -42,6 +42,9 @@ class Client:
         # Model evaluation results
         self.MRR, self.NDCG_5, self.NDCG_10, self.HR_1, self.HR_5, self.HR_10 \
             = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        if self.method == "FedDCSR":
+            self.MRR_shared, self.NDCG_5_shared, self.NDCG_10_shared, self.HR_1_shared, self.HR_5_shared, self.HR_10_shared \
+                = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
 
     def train_epoch(self, round, args):
         """Trains one client with its own training data for one epoch.
@@ -84,24 +87,35 @@ class Client:
         self.trainer.model.eval()
         if (self.method == "FedDCSR") or ("VGSAN" in self.method):
             self.trainer.model.graph_convolution(self.adj)
-        pred = []
+        pred_local = []
+        pred_shared = []
         for _, sessions in dataloader:
-            predictions = self.trainer.test_batch(sessions)
-            pred = pred + predictions
+            predictions_local, predictions_shared = self.trainer.test_batch(
+                sessions)
+            pred_local = pred_local + predictions_local
+            pred_shared = pred_shared + predictions_shared
 
         gc.collect()
         self.MRR, self.NDCG_5, self.NDCG_10, self.HR_1, self.HR_5, self.HR_10 \
-            = self.cal_test_score(pred)
+            = self.cal_test_score(pred_local)
+        self.MRR_shared, self.NDCG_5_shared, self.NDCG_10_shared, self.HR_1_shared, self.HR_5_shared, self.HR_10_shared \
+            = self.cal_test_score(pred_shared)
         return {"MRR": self.MRR, "HR @1": self.HR_1, "HR @5": self.HR_5,
                 "HR @10":  self.HR_10, "NDCG @5":  self.NDCG_5,
-                "NDCG @10": self.NDCG_10}
+                "NDCG @10": self.NDCG_10}, \
+            {"MRR": self.MRR_shared, "HR @1": self.HR_1_shared, "HR @5": self.HR_5_shared,
+             "HR @10":  self.HR_10_shared, "NDCG @5":  self.NDCG_5_shared,
+             "NDCG @10": self.NDCG_10_shared}
 
     def get_old_eval_log(self):
         """Returns the evaluation result of the lastest epoch.
         """
         return {"MRR": self.MRR, "HR @1": self.HR_1, "HR @5": self.HR_5,
                 "HR @10":  self.HR_10, "NDCG @5":  self.NDCG_5,
-                "NDCG @10": self.NDCG_10}
+                "NDCG @10": self.NDCG_10}, \
+            {"MRR": self.MRR_shared, "HR @1": self.HR_1_shared, "HR @5": self.HR_5_shared,
+             "HR @10":  self.HR_10_shared, "NDCG @5":  self.NDCG_5_shared,
+             "NDCG @10": self.NDCG_10_shared}
 
     @ staticmethod
     def cal_test_score(predictions):

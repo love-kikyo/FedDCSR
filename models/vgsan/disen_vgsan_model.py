@@ -220,8 +220,12 @@ class DisenVGSAN(nn.Module):
         z_e = torch.zeros_like(z_e_list[0])
         z_s = torch.zeros_like(z_s_list[0])
         for i in range(len(self.num_items_list)):
-            z_e = z_e + z_e_list[i]
-            z_s = z_s + z_s_list[i]
+            if i != self.c_id:
+                z_e = z_e + z_e_list[i]
+                z_s = z_s + z_s_list[i]
+            else:
+                z_e = z_e + z_e_list[i].detach()
+                z_s = z_s + z_s_list[i].detach()
         result_shared = self.linear_shared(z_s + z_e)
         result_pad_shared = self.linear_pad_shared(z_s + z_e)
         result_exclusive_shared = self.linear_shared(z_e)
@@ -234,7 +238,8 @@ class DisenVGSAN(nn.Module):
                 torch.cat((result_exclusive_shared, result_exclusive_pad_shared), dim=-1), \
                 mu_s_list, logvar_s_list, z_s_list, mu_e_list, logvar_e_list, z_e_list, neg_z_e_list, aug_z_e_list
         else:
-            return torch.cat((result_shared, result_pad_shared), dim=-1)
+            return torch.cat((result, result_pad), dim=-1), \
+                torch.cat((result_shared, result_pad_shared), dim=-1)
 
     def reparameterization(self, mu, logvar):
         std = torch.exp(0.5 * logvar)

@@ -10,26 +10,40 @@ def evaluation_logging(eval_logs, round, weights, mode="valid"):
     else:
         logging.info("Test:")
 
-    avg_eval_log = {}
-    for metric_name in list(eval_logs.values())[0].keys():
-        avg_eval_val = 0
+    avg_eval_log_local = {}
+    avg_eval_log_shared = {}
+    for metric_name in list(eval_logs.values())[0][0].keys():
+        avg_eval_val_local = 0
+        avg_eval_val_shared = 0
         for domain in eval_logs.keys():
-            avg_eval_val += eval_logs[domain][metric_name] * weights[domain]
-        avg_eval_log[metric_name] = avg_eval_val
+            dict1, dict2 = eval_logs[domain]
+            avg_eval_val_local += dict1[metric_name] * weights[domain]
+            avg_eval_val_shared += dict2[metric_name] * weights[domain]
+        avg_eval_log_local[metric_name] = avg_eval_val_local
+        avg_eval_log_shared[metric_name] = avg_eval_val_shared
 
-    logging.info("MRR: %.4f" % avg_eval_log["MRR"])
+    logging.info("model_local:")
+    logging.info("MRR: %.4f" % avg_eval_log_local["MRR"])
     logging.info("HR @1|5|10: %.4f \t %.4f \t %.4f \t" %
-                 (avg_eval_log["HR @1"], avg_eval_log["HR @5"],
-                     avg_eval_log["HR @10"]))
+                 (avg_eval_log_local["HR @1"], avg_eval_log_local["HR @5"],
+                     avg_eval_log_local["HR @10"]))
     logging.info("NDCG @5|10: %.4f \t %.4f" %
-                 (avg_eval_log["NDCG @5"], avg_eval_log["NDCG @10"]))
+                 (avg_eval_log_local["NDCG @5"], avg_eval_log_local["NDCG @10"]))
 
-    for domain, eval_log in eval_logs.items():
-        logging.info("%s MRR: %.4f \t HR @10: %.4f \t NDCG @10: %.4f"
-                     % (domain, eval_log["MRR"], eval_log["HR @10"],
-                         eval_log["NDCG @10"]))
+    logging.info("model_shared:")
+    logging.info("MRR: %.4f" % avg_eval_log_shared["MRR"])
+    logging.info("HR @1|5|10: %.4f \t %.4f \t %.4f \t" %
+                 (avg_eval_log_shared["HR @1"], avg_eval_log_shared["HR @5"],
+                     avg_eval_log_shared["HR @10"]))
+    logging.info("NDCG @5|10: %.4f \t %.4f" %
+                 (avg_eval_log_shared["NDCG @5"], avg_eval_log_shared["NDCG @10"]))
 
-    return avg_eval_log
+    # for domain, eval_log in eval_logs.items():
+    #     logging.info("%s MRR: %.4f \t HR @10: %.4f \t NDCG @10: %.4f"
+    #                  % (domain, eval_log["MRR"], eval_log["HR @10"],
+    #                      eval_log["NDCG @10"]))
+
+    return avg_eval_log_shared
 
 
 def load_and_eval_model(n_clients, clients, args):

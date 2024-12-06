@@ -68,7 +68,7 @@ def arg_parse():
                         help="Model ID under which to save models.")
     parser.add_argument("--do_eval", action="store_true")
     parser.add_argument("--es_patience", type=int,
-                        default=5, help="Early stop patience.")
+                        default=10, help="Early stop patience.")
     parser.add_argument("--ld_patience", type=int, default=1,
                         help="Learning rate decay patience.")
 
