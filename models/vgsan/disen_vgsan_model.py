@@ -53,8 +53,6 @@ class DisenVGSAN(nn.Module):
 
         self.encoder_e_list = nn.ModuleList(
             [Encoder(num_items_list[i], args) for i in range(len(num_items_list))])
-        self.decoder_list = nn.ModuleList(
-            [Decoder(num_items_list[i], args)for i in range(len(num_items_list))])
 
         self.linear_local = nn.Linear(
             config.hidden_size, num_items_list[c_id])
@@ -69,6 +67,12 @@ class DisenVGSAN(nn.Module):
             [nn.LayerNorm(config.hidden_size, eps=1e-12) for i in range(len(num_items_list))])
         self.dropout_list = nn.ModuleList(
             [nn.Dropout(config.dropout_rate) for i in range(len(num_items_list))])
+
+        self.Distribution_Aligner_list = nn.ModuleList([
+            # Only apply a simple linear transformation
+            nn.Linear(config.hidden_size, config.hidden_size)
+            for i in range(len(num_items_list))
+        ])
 
     def my_index_select_embedding(self, memory, index):
         tmp = list(index.size()) + [-1]
@@ -177,7 +181,9 @@ class DisenVGSAN(nn.Module):
         z_e = []
         for i in range(len(self.num_items_list)):
             if i != self.c_id:
-                z_e.append(z_e_list[i])
+                # z_e.append(torch.zeros_like(z_e_list[i]))
+                z = self.Distribution_Aligner_list[i](z_e_list[i])
+                z_e.append(z)
             else:
                 z_e.append(z_e_list[i].detach())
         z_e = torch.cat(z_e, dim=-1)

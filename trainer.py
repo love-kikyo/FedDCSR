@@ -12,7 +12,6 @@ from models.cl4srec.cl4srec_model import CL4SRec
 from models.duorec.duorec_model import DuoRec
 from utils import train_utils
 from losses import NCELoss, HingeLoss, JSDLoss, Discriminator, priorKL
-torch.autograd.set_detect_anomaly(True)
 
 
 class Trainer(object):
@@ -48,10 +47,16 @@ class ModelTrainer(Trainer):
         self.jsd_criterion = JSDLoss().to(self.device)
         self.hinge_criterion = HingeLoss(margin=0.3).to(self.device)
 
-        if args.method == "FedDCSR":
-            self.params = list(self.model.parameters())
-        else:
-            self.params = list(self.model.parameters())
+        self.params = list(self.model.parameters())
+        params_to_remove = []
+        for i in range(len(self.num_items_list)):
+            if i != self.c_id:
+                params_to_remove.extend(
+                    list(self.model.encoder_e_list[i].parameters()))
+        self.params = [
+            param for param in self.params if all(id(param) != id(exclude_param) for exclude_param in params_to_remove)
+        ]
+
         self.optimizer = train_utils.get_optimizer(
             args.optimizer, self.params, args.lr)
         self.step = 0
