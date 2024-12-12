@@ -7,12 +7,13 @@ import numpy as np
 import torch
 from dataloader import SeqDataloader
 from utils.io_utils import ensure_dir
+import fitlog
 
 
 class Client:
     def __init__(self, model_fn, c_id, args, adj, train_dataset, valid_dataset, test_dataset, num_items_list):
         # Used for computing the mask in self-attention module
-        self.num_items = num_items_list[c_id]
+        self.num_items_list = num_items_list
         self.c_id = c_id
         self.domain = train_dataset.domain
         # Used for computing the positional embeddings
@@ -40,11 +41,27 @@ class Client:
         # The aggretation weight
         self.train_pop, self.valid_weight, self.test_weight = 0.0, 0.0, 0.0
         # Model evaluation results
-        self.MRR, self.NDCG_5, self.NDCG_10, self.HR_1, self.HR_5, self.HR_10 \
-            = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        self.metrics_list = [
+            {
+                'MRR': 0.0,
+                'NDCG_5': 0.0,
+                'NDCG_10': 0.0,
+                'HR_1': 0.0,
+                'HR_5': 0.0,
+                'HR_10': 0.0
+            }
+            for i in range(len(self.num_items_list))
+        ]
+
         if self.method == "FedDCSR":
-            self.MRR_shared, self.NDCG_5_shared, self.NDCG_10_shared, self.HR_1_shared, self.HR_5_shared, self.HR_10_shared \
-                = 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+            self.metrics_shared = {
+                'MRR': 0.0,
+                'NDCG_5': 0.0,
+                'NDCG_10': 0.0,
+                'HR_1': 0.0,
+                'HR_5': 0.0,
+                'HR_10': 0.0
+            }
 
     def train_epoch(self, round, args):
         """Trains one client with its own training data for one epoch.
@@ -61,16 +78,18 @@ class Client:
             for _, sessions in self.train_dataloader:
                 if ("Fed" in args.method) and args.mu:
                     batch_loss = self.trainer.train_batch(
-                        sessions, self.adj, self.num_items, args)
+                        sessions, self.adj, self.num_items_list[self.c_id], args)
                 else:
                     batch_loss = self.trainer.train_batch(
-                        sessions, self.adj, self.num_items, args)
+                        sessions, self.adj, self.num_items_list[self.c_id], args)
                 loss += batch_loss
                 step += 1
 
             gc.collect()
         logging.info("Epoch {}/{} - client {} -  Training Loss: {:.3f}".format(
             round, args.epochs, self.c_id, loss / step))
+        client_loss_name = f"Loss_client_{self.c_id}"
+        fitlog.add_loss(loss / step, name=client_loss_name, step=round)
         return self.n_samples_train
 
     def evaluation(self, mode="valid"):
@@ -87,35 +106,27 @@ class Client:
         self.trainer.model.eval()
         if (self.method == "FedDCSR") or ("VGSAN" in self.method):
             self.trainer.model.graph_convolution(self.adj)
-        pred_local = []
+        pred_list = [[] for i in range(len(self.num_items_list))]
         pred_shared = []
         for _, sessions in dataloader:
-            predictions_local, predictions_shared = self.trainer.test_batch(
+            predictions_list, predictions_shared = self.trainer.test_batch(
                 sessions)
-            pred_local = pred_local + predictions_local
+            for i in range(len(self.num_items_list)):
+                pred_list[i] = pred_list[i] + predictions_list[i]
             pred_shared = pred_shared + predictions_shared
 
         gc.collect()
-        self.MRR, self.NDCG_5, self.NDCG_10, self.HR_1, self.HR_5, self.HR_10 \
-            = self.cal_test_score(pred_local)
-        self.MRR_shared, self.NDCG_5_shared, self.NDCG_10_shared, self.HR_1_shared, self.HR_5_shared, self.HR_10_shared \
+        for i in range(len(self.num_items_list)):
+            self.metrics_list[i]['MRR'], self.metrics_list[i]['NDCG_5'], self.metrics_list[i]['NDCG_10'], self.metrics_list[i]['HR_1'], self.metrics_list[i]['HR_5'], self.metrics_list[i]['HR_10'], \
+                = self.cal_test_score(pred_list[i])
+        self.metrics_shared['MRR'], self.metrics_shared['NDCG_5'], self.metrics_shared['NDCG_10'], self.metrics_shared['HR_1'], self.metrics_shared['HR_5'], self.metrics_shared['HR_10'], \
             = self.cal_test_score(pred_shared)
-        return {"MRR": self.MRR, "HR @1": self.HR_1, "HR @5": self.HR_5,
-                "HR @10":  self.HR_10, "NDCG @5":  self.NDCG_5,
-                "NDCG @10": self.NDCG_10}, \
-            {"MRR": self.MRR_shared, "HR @1": self.HR_1_shared, "HR @5": self.HR_5_shared,
-             "HR @10":  self.HR_10_shared, "NDCG @5":  self.NDCG_5_shared,
-             "NDCG @10": self.NDCG_10_shared}
+        return self.metrics_list, self.metrics_shared
 
     def get_old_eval_log(self):
         """Returns the evaluation result of the lastest epoch.
         """
-        return {"MRR": self.MRR, "HR @1": self.HR_1, "HR @5": self.HR_5,
-                "HR @10":  self.HR_10, "NDCG @5":  self.NDCG_5,
-                "NDCG @10": self.NDCG_10}, \
-            {"MRR": self.MRR_shared, "HR @1": self.HR_1_shared, "HR @5": self.HR_5_shared,
-             "HR @10":  self.HR_10_shared, "NDCG @5":  self.NDCG_5_shared,
-             "NDCG @10": self.NDCG_10_shared}
+        return self.metrics_list, self.metrics_shared
 
     @ staticmethod
     def cal_test_score(predictions):

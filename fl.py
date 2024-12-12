@@ -9,39 +9,49 @@ def evaluation_logging(eval_logs, round, weights, mode="valid"):
         logging.info("Epoch%d Valid:" % round)
     else:
         logging.info("Test:")
-
-    avg_eval_log_local = {}
+    domain_list = list(eval_logs.keys())
+    avg_eval_log = {}
     avg_eval_log_shared = {}
-    for metric_name in list(eval_logs.values())[0][0].keys():
-        avg_eval_val_local = 0
+    for metric_name in list(eval_logs.values())[0][1].keys():
+        avg_eval_val = 0
         avg_eval_val_shared = 0
-        for domain in eval_logs.keys():
-            dict1, dict2 = eval_logs[domain]
-            avg_eval_val_local += dict1[metric_name] * weights[domain]
-            avg_eval_val_shared += dict2[metric_name] * weights[domain]
-        avg_eval_log_local[metric_name] = avg_eval_val_local
+        for i in range(len(domain_list)):
+            eval_list, eval_shared = eval_logs[domain_list[i]]
+            avg_eval_val += eval_list[i][metric_name] * weights[domain_list[i]]
+            avg_eval_val_shared += eval_shared[metric_name] * \
+                weights[domain_list[i]]
+        avg_eval_log[metric_name] = avg_eval_val
         avg_eval_log_shared[metric_name] = avg_eval_val_shared
 
+    # for i in range(len(eval_logs)):
+    #     logging.info("domain:%s", domain_list[i])
+    #     for j in range(len(eval_logs[domain_list[i]][0])):
+    #         if i != j:
+    #             logging.info("model_%s:", j)
+    #         else:
+    #             logging.info("model_local:")
+    #         logging.info("MRR: %.4f" % eval_logs[domain_list[i]][0][j]["MRR"])
+        # logging.info("HR @1|5|10: %.4f \t %.4f \t %.4f \t" %
+        #              (eval_logs[i][j]["HR_1"], eval_logs[i][j]["HR_5"],
+        #               eval_logs[i][j]["HR_10"]))
+        # logging.info("NDCG @5|10: %.4f \t %.4f" %
+        #              (eval_logs[i][j]["NDCG_5"], eval_logs[i][j]["NDCG_10"]))
+
     logging.info("model_local:")
-    logging.info("MRR: %.4f" % avg_eval_log_local["MRR"])
-    logging.info("HR @1|5|10: %.4f \t %.4f \t %.4f \t" %
-                 (avg_eval_log_local["HR @1"], avg_eval_log_local["HR @5"],
-                     avg_eval_log_local["HR @10"]))
-    logging.info("NDCG @5|10: %.4f \t %.4f" %
-                 (avg_eval_log_local["NDCG @5"], avg_eval_log_local["NDCG @10"]))
+    logging.info("MRR: %.4f" % avg_eval_log["MRR"])
+    # logging.info("HR @1|5|10: %.4f \t %.4f \t %.4f \t" %
+    #              (avg_eval_log["HR_1"], avg_eval_log["HR_5"],
+    #                  avg_eval_log["HR_10"]))
+    # logging.info("NDCG @5|10: %.4f \t %.4f" %
+    #              (avg_eval_log["NDCG_5"], avg_eval_log["NDCG_10"]))
 
     logging.info("model_shared:")
     logging.info("MRR: %.4f" % avg_eval_log_shared["MRR"])
-    logging.info("HR @1|5|10: %.4f \t %.4f \t %.4f \t" %
-                 (avg_eval_log_shared["HR @1"], avg_eval_log_shared["HR @5"],
-                     avg_eval_log_shared["HR @10"]))
-    logging.info("NDCG @5|10: %.4f \t %.4f" %
-                 (avg_eval_log_shared["NDCG @5"], avg_eval_log_shared["NDCG @10"]))
-
-    # for domain, eval_log in eval_logs.items():
-    #     logging.info("%s MRR: %.4f \t HR @10: %.4f \t NDCG @10: %.4f"
-    #                  % (domain, eval_log["MRR"], eval_log["HR @10"],
-    #                      eval_log["NDCG @10"]))
+    # logging.info("HR @1|5|10: %.4f \t %.4f \t %.4f \t" %
+    #              (avg_eval_log_shared["HR_1"], avg_eval_log_shared["HR_5"],
+    #                  avg_eval_log_shared["HR_10"]))
+    # logging.info("NDCG @5|10: %.4f \t %.4f" %
+    #              (avg_eval_log_shared["NDCG_5"], avg_eval_log_shared["NDCG_10"]))
 
     return avg_eval_log_shared
 
@@ -90,10 +100,12 @@ def run_fl(clients, server, args):
                         clients[c_id].set_shared_params(
                             server.get_model_shared_params())
                     if c_id in random_cids:
-                        eval_log = clients[c_id].evaluation(mode="valid")
+                        eval_log_list, eval_log_shared = clients[c_id].evaluation(
+                            mode="valid")
                     else:
-                        eval_log = clients[c_id].get_old_eval_log()
-                    eval_logs[clients[c_id].domain] = eval_log
+                        eval_log_list, eval_log_shared = clients[c_id].get_old_eval_log(
+                        )
+                    eval_logs[clients[c_id].domain] = eval_log_list, eval_log_shared
 
                 weights = dict((client.domain, client.valid_weight)
                                for client in clients)

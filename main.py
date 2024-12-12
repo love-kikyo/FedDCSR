@@ -11,6 +11,7 @@ from server import Server
 from utils.data_utils import load_dataset, init_clients_weight
 from utils.io_utils import save_config, ensure_dir
 from fl import run_fl
+import fitlog
 
 
 def arg_parse():
@@ -131,7 +132,10 @@ def init_logger(args):
 
 
 def main():
+    fitlog.set_log_dir("logs/")
     args = arg_parse()
+    fitlog.add_hyper(args)
+    fitlog.add_hyper_in_file(__file__)
 
     seed_everything(args)
 

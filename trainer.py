@@ -53,9 +53,8 @@ class ModelTrainer(Trainer):
             if i != self.c_id:
                 params_to_remove.extend(
                     list(self.model.encoder_e_list[i].parameters()))
-        self.params = [
-            param for param in self.params if all(id(param) != id(exclude_param) for exclude_param in params_to_remove)
-        ]
+        self.params = [param for param in self.params if all(
+            id(param) != id(exclude_param) for exclude_param in params_to_remove)]
 
         self.optimizer = train_utils.get_optimizer(
             args.optimizer, self.params, args.lr)
@@ -92,14 +91,12 @@ class ModelTrainer(Trainer):
             # `contrast_aug_seqs` is used for computing contrastive infomax
             # loss
             seq, ground, ground_mask, js_neg_seqs, contrast_aug_seqs = sessions
-            result_local, result_exclusive_local, \
-                result_shared, result_exclusive_shared, \
+            result_list, result_shared, \
                 mu_e_list, logvar_e_list, z_e_list, neg_z_e_list, aug_z_e_list = self.model(
                     seq, neg_seqs=js_neg_seqs, aug_seqs=contrast_aug_seqs)
             # Broadcast in last dim. it well be used to compute `z_g` by
             # federated aggregation later
-            loss = self.disen_vgsan_loss_fn(result_local, result_exclusive_local,
-                                            result_shared, result_exclusive_shared,
+            loss = self.disen_vgsan_loss_fn(result_list, result_shared,
                                             mu_e_list, logvar_e_list,
                                             ground, z_e_list,
                                             neg_z_e_list, aug_z_e_list, ground_mask,
@@ -110,8 +107,7 @@ class ModelTrainer(Trainer):
         self.step += 1
         return loss.item()
 
-    def disen_vgsan_loss_fn(self, result_local, result_exclusive_local,
-                            result_shared, result_exclusive_shared,
+    def disen_vgsan_loss_fn(self, result_list, result_shared,
                             mu_e_list, logvar_e_list,
                             ground, z_e_list,
                             neg_z_e_list, aug_z_e_list, ground_mask,
@@ -119,17 +115,14 @@ class ModelTrainer(Trainer):
         """Overall loss function of FedDCSR (our method).
         """
 
-        recons_loss_local = self.cs_criterion(
-            result_local.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss_local = (recons_loss_local *
-                             (ground_mask.reshape(-1))).mean()
-
-        recons_loss_exclusive_local = self.cs_criterion(
-            result_exclusive_local.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss_exclusive_local = (
-            recons_loss_exclusive_local * (ground_mask.reshape(-1))).mean()
+        recons_loss_sum = 0
+        for i in range(len(self.num_items_list)):
+            recons_loss = self.cs_criterion(
+                result_list[i].reshape(-1, num_items + 1),
+                ground.reshape(-1))  # (batch_size * seq_len, )
+            recons_loss = (recons_loss *
+                           (ground_mask.reshape(-1))).mean()
+            recons_loss_sum = recons_loss_sum + recons_loss
 
         recons_loss_shared = self.cs_criterion(
             result_shared.reshape(-1, num_items + 1),
@@ -137,56 +130,32 @@ class ModelTrainer(Trainer):
         recons_loss_shared = (recons_loss_shared *
                               (ground_mask.reshape(-1))).mean()
 
-        recons_loss_exclusive_shared = self.cs_criterion(
-            result_exclusive_shared.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss_exclusive_shared = (
-            recons_loss_exclusive_shared * (ground_mask.reshape(-1))).mean()
-
-        kld_loss_e_local = -0.5 * \
-            torch.sum(1 + logvar_e_list[self.c_id] - mu_e_list[self.c_id] ** 2 -
-                      logvar_e_list[self.c_id].exp(), dim=-1).reshape(-1)
-        kld_loss_e_local = (kld_loss_e_local *
-                            (ground_mask.reshape(-1))).mean()
-
-        kld_loss_e_shared = 0
+        kld_loss_e_sum = 0
         for i in range(len(self.num_items_list)):
-            if i != self.c_id:
-                kld_loss_e = -0.5 * \
-                    torch.sum(1 + logvar_e_list[i] - mu_e_list[i] ** 2 -
-                              logvar_e_list[i].exp(), dim=-1).reshape(-1)
-                kld_loss_e = (kld_loss_e * (ground_mask.reshape(-1))).mean()
-                kld_loss_e_shared += kld_loss_e
-        kld_loss_e_shared /= len(self.num_items_list) - 1
+            kld_loss_e = -0.5 * \
+                torch.sum(1 + logvar_e_list[i] - mu_e_list[i] ** 2 -
+                          logvar_e_list[i].exp(), dim=-1).reshape(-1)
+            kld_loss_e = (kld_loss_e * (ground_mask.reshape(-1))).mean()
+            kld_loss_e_sum = kld_loss_e_sum + kld_loss_e
 
         alpha = 1.0  # 1.0 for all scenarios
 
         kld_weight = self.kl_anneal_function(
             self.args.anneal_cap, step, self.args.total_annealing_step)
 
-        gamma = 1.0  # 1.0 for all scenarios
-
         lam = 1.0  # 1.0 for FKCB and BMG, 0.1 for SGH
 
-        user_representation1 = z_e_list[self.c_id][:, -1, :]
-        user_representation2 = aug_z_e_list[self.c_id][:, -1, :]
-        contrastive_loss_local = self.cl_criterion(
-            user_representation1, user_representation2)
-        contrastive_loss_local = contrastive_loss_local.mean()
-        contrastive_loss_shared = 0
+        contrastive_loss_sum = 0
         for i in range(len(self.num_items_list)):
-            if i != self.c_id:
-                user_representation1 = z_e_list[i][:, -1, :]
-                user_representation2 = aug_z_e_list[i][:, -1, :]
-                contrastive_loss = self.cl_criterion(
-                    user_representation1, user_representation2)
-                contrastive_loss_shared += contrastive_loss.mean()
-        contrastive_loss_shared /= len(self.num_items_list) - 1
+            user_representation1 = z_e_list[i][:, -1, :]
+            user_representation2 = aug_z_e_list[i][:, -1, :]
+            contrastive_loss = self.cl_criterion(
+                user_representation1, user_representation2)
+            contrastive_loss_sum = contrastive_loss_sum + contrastive_loss.mean()
 
-        loss = alpha * ((recons_loss_local + recons_loss_shared) +
-                        kld_weight * (kld_loss_e_local + kld_loss_e_shared)) \
-            + gamma * (recons_loss_exclusive_local + recons_loss_exclusive_shared) \
-            + lam * (contrastive_loss_local + contrastive_loss_shared)
+        loss = alpha * ((recons_loss_sum + recons_loss_shared) +
+                        kld_weight * kld_loss_e_sum) \
+            + lam * (contrastive_loss_sum)
 
         return loss
 
@@ -231,19 +200,22 @@ class ModelTrainer(Trainer):
         # neg_list: (batch_size, num_test_neg)
         seq, ground_truth, neg_list = sessions
         # result: (batch_size, seq_len, num_items)
-        result_local, result_shared = self.model(seq)
+        result_list, result_shared = self.model(seq)
 
-        pred_local = []
+        pred_list = []
         pred_shared = []
-        for id in range(len(result_local)):
-            # result[id, -1]: (num_items, )
-            score = result_local[id, -1]
-            cur = score[ground_truth[id]]
-            # score_larger = (score[neg_list[id]] > (cur + 0.00001))\
-            # .data.cpu().numpy()
-            score_larger = (score[neg_list[id]] > (cur)).data.cpu().numpy()
-            true_item_rank = np.sum(score_larger) + 1
-            pred_local.append(true_item_rank)
+        for result in result_list:
+            pred = []
+            for id in range(len(result)):
+                # result[id, -1]: (num_items, )
+                score = result[id, -1]
+                cur = score[ground_truth[id]]
+                # score_larger = (score[neg_list[id]] > (cur + 0.00001))\
+                # .data.cpu().numpy()
+                score_larger = (score[neg_list[id]] > (cur)).data.cpu().numpy()
+                true_item_rank = np.sum(score_larger) + 1
+                pred.append(true_item_rank)
+            pred_list.append(pred)
 
         for id in range(len(result_shared)):
             # result[id, -1]: (num_items, )
@@ -255,4 +227,4 @@ class ModelTrainer(Trainer):
             true_item_rank = np.sum(score_larger) + 1
             pred_shared.append(true_item_rank)
 
-        return pred_local, pred_shared
+        return pred_list, pred_shared

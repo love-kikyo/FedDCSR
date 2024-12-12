@@ -54,9 +54,10 @@ class DisenVGSAN(nn.Module):
         self.encoder_e_list = nn.ModuleList(
             [Encoder(num_items_list[i], args) for i in range(len(num_items_list))])
 
-        self.linear_local = nn.Linear(
-            config.hidden_size, num_items_list[c_id])
-        self.linear_pad_local = nn.Linear(config.hidden_size, 1)
+        self.linear_list = nn.ModuleList([nn.Linear(
+            config.hidden_size, num_items_list[c_id]) for i in range(len(num_items_list))])
+        self.linear_pad_list = nn.ModuleList(
+            [nn.Linear(config.hidden_size, 1) for i in range(len(num_items_list))])
 
         self.linear_shared = nn.Linear(
             config.hidden_size * len(self.num_items_list), num_items_list[c_id])
@@ -69,8 +70,11 @@ class DisenVGSAN(nn.Module):
             [nn.Dropout(config.dropout_rate) for i in range(len(num_items_list))])
 
         self.Distribution_Aligner_list = nn.ModuleList([
-            # Only apply a simple linear transformation
-            nn.Linear(config.hidden_size, config.hidden_size)
+            nn.Sequential(
+                nn.Linear(config.hidden_size, config.hidden_size // 2),
+                nn.ReLU(),
+                nn.Linear(config.hidden_size // 2, config.hidden_size)
+            )
             for i in range(len(num_items_list))
         ])
 
@@ -172,11 +176,11 @@ class DisenVGSAN(nn.Module):
             logvar_e_list.append(logvar_e)
             z_e_list.append(z_e)
 
-        result = self.linear_local(z_e_list[self.c_id])
-        result_pad = self.linear_pad_local(z_e_list[self.c_id])
-        # reconstructed_seq_exclusive = self.decoder(z_e)
-        result_exclusive = self.linear_local(z_e_list[self.c_id])
-        result_exclusive_pad = self.linear_pad_local(z_e_list[self.c_id])
+        result_list = []
+        for i in range(len(self.num_items_list)):
+            result = self.linear_list[i](z_e_list[i])
+            result_pad = self.linear_pad_list[i](z_e_list[i])
+            result_list.append(torch.cat((result, result_pad), dim=-1))
 
         z_e = []
         for i in range(len(self.num_items_list)):
@@ -190,17 +194,13 @@ class DisenVGSAN(nn.Module):
 
         result_shared = self.linear_shared(z_e)
         result_pad_shared = self.linear_pad_shared(z_e)
-        result_exclusive_shared = self.linear_shared(z_e)
-        result_exclusive_pad_shared = self.linear_pad_shared(z_e)
 
         if self.training:
-            return torch.cat((result, result_pad), dim=-1), \
-                torch.cat((result_exclusive, result_exclusive_pad), dim=-1), \
+            return result_list, \
                 torch.cat((result_shared, result_pad_shared), dim=-1), \
-                torch.cat((result_exclusive_shared, result_exclusive_pad_shared), dim=-1), \
                 mu_e_list, logvar_e_list, z_e_list, neg_z_e_list, aug_z_e_list
         else:
-            return torch.cat((result, result_pad), dim=-1), \
+            return result_list, \
                 torch.cat((result_shared, result_pad_shared), dim=-1)
 
     def reparameterization(self, mu, logvar):
