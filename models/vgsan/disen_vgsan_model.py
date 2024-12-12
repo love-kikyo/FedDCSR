@@ -175,8 +175,6 @@ class DisenVGSAN(nn.Module):
         result = self.linear_local(z_e_list[self.c_id])
         result_pad = self.linear_pad_local(z_e_list[self.c_id])
         # reconstructed_seq_exclusive = self.decoder(z_e)
-        result_exclusive = self.linear_local(z_e_list[self.c_id])
-        result_exclusive_pad = self.linear_pad_local(z_e_list[self.c_id])
 
         z_e = []
         for i in range(len(self.num_items_list)):
@@ -190,14 +188,10 @@ class DisenVGSAN(nn.Module):
 
         result_shared = self.linear_shared(z_e)
         result_pad_shared = self.linear_pad_shared(z_e)
-        result_exclusive_shared = self.linear_shared(z_e)
-        result_exclusive_pad_shared = self.linear_pad_shared(z_e)
 
         if self.training:
             return torch.cat((result, result_pad), dim=-1), \
-                torch.cat((result_exclusive, result_exclusive_pad), dim=-1), \
                 torch.cat((result_shared, result_pad_shared), dim=-1), \
-                torch.cat((result_exclusive_shared, result_exclusive_pad_shared), dim=-1), \
                 mu_e_list, logvar_e_list, z_e_list, neg_z_e_list, aug_z_e_list
         else:
             return torch.cat((result, result_pad), dim=-1), \

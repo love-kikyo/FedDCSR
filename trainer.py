@@ -92,14 +92,12 @@ class ModelTrainer(Trainer):
             # `contrast_aug_seqs` is used for computing contrastive infomax
             # loss
             seq, ground, ground_mask, js_neg_seqs, contrast_aug_seqs = sessions
-            result_local, result_exclusive_local, \
-                result_shared, result_exclusive_shared, \
+            result_local, result_shared,  \
                 mu_e_list, logvar_e_list, z_e_list, neg_z_e_list, aug_z_e_list = self.model(
                     seq, neg_seqs=js_neg_seqs, aug_seqs=contrast_aug_seqs)
             # Broadcast in last dim. it well be used to compute `z_g` by
             # federated aggregation later
-            loss = self.disen_vgsan_loss_fn(result_local, result_exclusive_local,
-                                            result_shared, result_exclusive_shared,
+            loss = self.disen_vgsan_loss_fn(result_local, result_shared,
                                             mu_e_list, logvar_e_list,
                                             ground, z_e_list,
                                             neg_z_e_list, aug_z_e_list, ground_mask,
@@ -110,8 +108,7 @@ class ModelTrainer(Trainer):
         self.step += 1
         return loss.item()
 
-    def disen_vgsan_loss_fn(self, result_local, result_exclusive_local,
-                            result_shared, result_exclusive_shared,
+    def disen_vgsan_loss_fn(self, result_local, result_shared,
                             mu_e_list, logvar_e_list,
                             ground, z_e_list,
                             neg_z_e_list, aug_z_e_list, ground_mask,
@@ -125,23 +122,11 @@ class ModelTrainer(Trainer):
         recons_loss_local = (recons_loss_local *
                              (ground_mask.reshape(-1))).mean()
 
-        recons_loss_exclusive_local = self.cs_criterion(
-            result_exclusive_local.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss_exclusive_local = (
-            recons_loss_exclusive_local * (ground_mask.reshape(-1))).mean()
-
         recons_loss_shared = self.cs_criterion(
             result_shared.reshape(-1, num_items + 1),
             ground.reshape(-1))  # (batch_size * seq_len, )
         recons_loss_shared = (recons_loss_shared *
                               (ground_mask.reshape(-1))).mean()
-
-        recons_loss_exclusive_shared = self.cs_criterion(
-            result_exclusive_shared.reshape(-1, num_items + 1),
-            ground.reshape(-1))  # (batch_size * seq_len, )
-        recons_loss_exclusive_shared = (
-            recons_loss_exclusive_shared * (ground_mask.reshape(-1))).mean()
 
         kld_loss_e_local = -0.5 * \
             torch.sum(1 + logvar_e_list[self.c_id] - mu_e_list[self.c_id] ** 2 -
@@ -164,8 +149,6 @@ class ModelTrainer(Trainer):
         kld_weight = self.kl_anneal_function(
             self.args.anneal_cap, step, self.args.total_annealing_step)
 
-        gamma = 1.0  # 1.0 for all scenarios
-
         lam = 1.0  # 1.0 for FKCB and BMG, 0.1 for SGH
 
         user_representation1 = z_e_list[self.c_id][:, -1, :]
@@ -185,7 +168,6 @@ class ModelTrainer(Trainer):
 
         loss = alpha * ((recons_loss_local + recons_loss_shared) +
                         kld_weight * (kld_loss_e_local + kld_loss_e_shared)) \
-            + gamma * (recons_loss_exclusive_local + recons_loss_exclusive_shared) \
             + lam * (contrastive_loss_local + contrastive_loss_shared)
 
         return loss
