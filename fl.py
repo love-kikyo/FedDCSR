@@ -23,30 +23,30 @@ def evaluation_logging(eval_logs, round, weights, mode="valid"):
         avg_eval_log[metric_name] = avg_eval_val
         avg_eval_log_shared[metric_name] = avg_eval_val_shared
 
-    # for i in range(len(eval_logs)):
-    #     logging.info("domain:%s", domain_list[i])
-    #     for j in range(len(eval_logs[domain_list[i]][0])):
-    #         if i != j:
-    #             logging.info("model_%s:", j)
-    #         else:
-    #             logging.info("model_local:")
-    #         logging.info("MRR: %.4f" % eval_logs[domain_list[i]][0][j]["MRR"])
+    for i in range(len(eval_logs)):
+        logging.info("domain:%s", domain_list[i])
+        for j in range(len(eval_logs[domain_list[i]][0])):
+            if i != j:
+                logging.info("model_%s:", j)
+            else:
+                logging.info("\tmodel_local:")
+            logging.info("MRR: %.4f" % eval_logs[domain_list[i]][0][j]["MRR"])
+        logging.info("\tmodel_shared:")
+        logging.info("MRR: %.4f" % eval_logs[domain_list[i]][1]["MRR"])
+        
         # logging.info("HR @1|5|10: %.4f \t %.4f \t %.4f \t" %
         #              (eval_logs[i][j]["HR_1"], eval_logs[i][j]["HR_5"],
         #               eval_logs[i][j]["HR_10"]))
         # logging.info("NDCG @5|10: %.4f \t %.4f" %
         #              (eval_logs[i][j]["NDCG_5"], eval_logs[i][j]["NDCG_10"]))
 
-    logging.info("model_local:")
+    logging.info("\tavg_model_local:")
     logging.info("MRR: %.4f" % avg_eval_log["MRR"])
-    # logging.info("HR @1|5|10: %.4f \t %.4f \t %.4f \t" %
-    #              (avg_eval_log["HR_1"], avg_eval_log["HR_5"],
-    #                  avg_eval_log["HR_10"]))
-    # logging.info("NDCG @5|10: %.4f \t %.4f" %
-    #              (avg_eval_log["NDCG_5"], avg_eval_log["NDCG_10"]))
+    
 
-    logging.info("model_shared:")
+    logging.info("\tavg_model_shared:")
     logging.info("MRR: %.4f" % avg_eval_log_shared["MRR"])
+    
     # logging.info("HR @1|5|10: %.4f \t %.4f \t %.4f \t" %
     #              (avg_eval_log_shared["HR_1"], avg_eval_log_shared["HR_5"],
     #                  avg_eval_log_shared["HR_10"]))

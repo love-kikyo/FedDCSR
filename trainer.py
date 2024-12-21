@@ -96,16 +96,16 @@ class ModelTrainer(Trainer):
                     seq, neg_seqs=js_neg_seqs, aug_seqs=contrast_aug_seqs)
             # Broadcast in last dim. it well be used to compute `z_g` by
             # federated aggregation later
-            loss = self.disen_vgsan_loss_fn(result_list, result_shared,
-                                            mu_e_list, logvar_e_list,
-                                            ground, z_e_list,
-                                            neg_z_e_list, aug_z_e_list, ground_mask,
-                                            num_items, self.step)
+            loss, loss_list = self.disen_vgsan_loss_fn(result_list, result_shared,
+                                                       mu_e_list, logvar_e_list,
+                                                       ground, z_e_list,
+                                                       neg_z_e_list, aug_z_e_list, ground_mask,
+                                                       num_items, self.step)
 
         loss.backward()
         self.optimizer.step()
         self.step += 1
-        return loss.item()
+        return loss.item(), loss_list
 
     def disen_vgsan_loss_fn(self, result_list, result_shared,
                             mu_e_list, logvar_e_list,
@@ -115,14 +115,14 @@ class ModelTrainer(Trainer):
         """Overall loss function of FedDCSR (our method).
         """
 
-        recons_loss_sum = 0
+        recons_loss_list = []
         for i in range(len(self.num_items_list)):
             recons_loss = self.cs_criterion(
                 result_list[i].reshape(-1, num_items + 1),
                 ground.reshape(-1))  # (batch_size * seq_len, )
             recons_loss = (recons_loss *
                            (ground_mask.reshape(-1))).mean()
-            recons_loss_sum = recons_loss_sum + recons_loss
+            recons_loss_list.append(recons_loss)
 
         recons_loss_shared = self.cs_criterion(
             result_shared.reshape(-1, num_items + 1),
@@ -130,13 +130,13 @@ class ModelTrainer(Trainer):
         recons_loss_shared = (recons_loss_shared *
                               (ground_mask.reshape(-1))).mean()
 
-        kld_loss_e_sum = 0
+        kld_loss_e_list = []
         for i in range(len(self.num_items_list)):
             kld_loss_e = -0.5 * \
                 torch.sum(1 + logvar_e_list[i] - mu_e_list[i] ** 2 -
                           logvar_e_list[i].exp(), dim=-1).reshape(-1)
             kld_loss_e = (kld_loss_e * (ground_mask.reshape(-1))).mean()
-            kld_loss_e_sum = kld_loss_e_sum + kld_loss_e
+            kld_loss_e_list.append(kld_loss_e)
 
         alpha = 1.0  # 1.0 for all scenarios
 
@@ -145,19 +145,29 @@ class ModelTrainer(Trainer):
 
         lam = 1.0  # 1.0 for FKCB and BMG, 0.1 for SGH
 
-        contrastive_loss_sum = 0
+        contrastive_loss_list = []
         for i in range(len(self.num_items_list)):
             user_representation1 = z_e_list[i][:, -1, :]
             user_representation2 = aug_z_e_list[i][:, -1, :]
             contrastive_loss = self.cl_criterion(
                 user_representation1, user_representation2)
-            contrastive_loss_sum = contrastive_loss_sum + contrastive_loss.mean()
+            contrastive_loss_list.append(contrastive_loss.mean())
 
-        loss = alpha * ((recons_loss_sum + recons_loss_shared) +
-                        kld_weight * kld_loss_e_sum) \
-            + lam * (contrastive_loss_sum)
+        loss_sum = 0
+        loss_list = []
+        for i in range(len(self.num_items_list)):
+            loss_list_t = []
+            loss = alpha * (recons_loss_list[i] + kld_weight * kld_loss_e_list[i]) \
+                + lam * contrastive_loss_list[i]
+            loss_sum = loss_sum + loss
+            loss_list_t.append(alpha * recons_loss_list[i])
+            loss_list_t.append(alpha * kld_weight * kld_loss_e_list[i])
+            loss_list_t.append(lam * contrastive_loss_list[i])
+            loss_list.append(loss_list_t)
+        loss_sum = loss_sum + alpha * recons_loss_shared
+        loss_list.append(alpha * recons_loss_shared)
 
-        return loss
+        return loss_sum, loss_list
 
     def kl_anneal_function(self, anneal_cap, step, total_annealing_step):
         """
