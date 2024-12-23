@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .modules import SelfAttention
 from .gnn import GCNLayer
 from . import config
@@ -36,11 +37,42 @@ class Decoder(nn.Module):
         return feat_seq
 
 
+class Moe(nn.Module):
+    def __init__(self, input_dim, num_experts, args):
+        super(Moe, self).__init__()
+        self.device = "cuda:%s" % args.gpu if args.cuda else "cpu"
+        self.input_dim = input_dim
+        self.num_experts = num_experts
+
+        self.gate = nn.Linear(input_dim, num_experts)
+        self.experts = nn.ModuleList(
+            [nn.Linear(input_dim, input_dim) for _ in range(num_experts)])
+
+    def forward(self, result_shared, z_e_cat):
+        result_shared = result_shared.to(self.device)
+        z_e_cat = [z.to(self.device) for z in z_e_cat]
+
+        # Gate scores计算
+        gate_scores = self.gate(result_shared)  # (batch_size, num_experts)
+        gate_scores = F.softmax(gate_scores, dim=-1)
+
+        avg_gate_scores = gate_scores.mean(dim=0)
+
+        gate_scores = gate_scores.unsqueeze(-1)  # (batch_size, num_experts, 1)
+        # (batch_size, num_experts, input_dim)
+        z_e_cat = torch.stack(z_e_cat, dim=1)
+
+        # 加权求和 (batch_size, input_dim)
+        z_e = torch.sum(gate_scores * z_e_cat, dim=1)
+        return z_e, avg_gate_scores
+
+
 class DisenVGSAN(nn.Module):
     def __init__(self, c_id, args, num_items_list):
         super(DisenVGSAN, self).__init__()
         self.device = "cuda:%s" % args.gpu if args.cuda else "cpu"
         self.num_items_list = num_items_list
+        self.num_domains = len(num_items_list)
         self.c_id = c_id
         # Item embeddings cannot be shared between clients, because the number
         # of items in each domain is different.
@@ -60,9 +92,9 @@ class DisenVGSAN(nn.Module):
             [nn.Linear(config.hidden_size, 1) for i in range(len(num_items_list))])
 
         self.linear_shared = nn.Linear(
-            config.hidden_size * len(self.num_items_list), num_items_list[c_id])
+            config.hidden_size * self.num_domains, num_items_list[c_id])
         self.linear_pad_shared = nn.Linear(
-            config.hidden_size * len(self.num_items_list), 1)
+            config.hidden_size * self.num_domains, 1)
 
         self.LayerNorm_e_list = nn.ModuleList(
             [nn.LayerNorm(config.hidden_size, eps=1e-12) for i in range(len(num_items_list))])
@@ -77,6 +109,8 @@ class DisenVGSAN(nn.Module):
             )
             for i in range(len(num_items_list))
         ])
+        # self.moe = Moe(
+        # self.num_items_list[self.c_id], self.num_domains, args)
 
     def my_index_select_embedding(self, memory, index):
         tmp = list(index.size()) + [-1]
@@ -94,7 +128,7 @@ class DisenVGSAN(nn.Module):
 
     def graph_convolution(self, adj):
         self.item_graph_embs_e_list = []
-        for i in range(len(self.num_items_list)):
+        for i in range(self.num_domains):
             self.item_index_e = torch.arange(
                 0, self.item_emb_e_list[i].num_embeddings, 1).to(self.device)
             item_embs_e = self.my_index_select_embedding(
@@ -122,7 +156,7 @@ class DisenVGSAN(nn.Module):
         # Here we need to select the embeddings of items appearing in the
         # sequence
         seqs_emb_e_list = []
-        for i in range(len(self.num_items_list)):
+        for i in range(self.num_domains):
             seqs_emb_e = self.my_index_select(
                 self.item_graph_embs_e_list[i], seqs) + self.item_emb_e_list[i](seqs)
             # (batch_size, seq_len, hidden_size)
@@ -136,7 +170,7 @@ class DisenVGSAN(nn.Module):
         if self.training:
             neg_seqs_emb_list = []
             aug_seqs_emb_list = []
-            for i in range(len(self.num_items_list)):
+            for i in range(self.num_domains):
                 neg_seqs_emb = self.my_index_select(
                     self.item_graph_embs_e_list[i], neg_seqs) + self.item_emb_e_list[i](neg_seqs)
                 aug_seqs_emb = self.my_index_select(
@@ -155,7 +189,7 @@ class DisenVGSAN(nn.Module):
         if self.training:
             neg_z_e_list = []
             aug_z_e_list = []
-            for i in range(len(self.num_items_list)):
+            for i in range(self.num_domains):
                 neg_mu_e, neg_logvar_e = self.encoder_e_list[i](
                     neg_seqs_emb, neg_seqs)
                 neg_z_e = self.reparameterization(neg_mu_e, neg_logvar_e)
@@ -169,7 +203,7 @@ class DisenVGSAN(nn.Module):
         mu_e_list = []
         logvar_e_list = []
         z_e_list = []
-        for i in range(len(self.num_items_list)):
+        for i in range(self.num_domains):
             mu_e, logvar_e = self.encoder_e_list[i](seqs_emb_e, seqs)
             z_e = self.reparameterization(mu_e, logvar_e)
             mu_e_list.append(mu_e)
@@ -177,23 +211,35 @@ class DisenVGSAN(nn.Module):
             z_e_list.append(z_e)
 
         result_list = []
-        for i in range(len(self.num_items_list)):
+        for i in range(self.num_domains):
             result = self.linear_list[i](z_e_list[i])
             result_pad = self.linear_pad_list[i](z_e_list[i])
             result_list.append(torch.cat((result, result_pad), dim=-1))
 
-        z_e = []
-        for i in range(len(self.num_items_list)):
+        z_e_cat = []
+        for i in range(self.num_domains):
             if i != self.c_id:
                 # z_e.append(torch.zeros_like(z_e_list[i]))
-                z = self.Distribution_Aligner_list[i](z_e_list[i])
-                z_e.append(z)
+                z_e = self.Distribution_Aligner_list[i](z_e_list[i])
+                z_e_cat.append(z_e)
             else:
-                z_e.append(z_e_list[i].detach())
-        z_e = torch.cat(z_e, dim=-1)
+                z_e_cat.append(z_e_list[i].detach())
+        z_e_shared = torch.cat(z_e_cat, dim=-1)
+        '''
+        moe(result_shared, z_e_cat)
+            gate_score = nn.linear(result_shared) (batch_size * 4)  激活函数：softmax (gate权重 输出平均权值)
+            gate 与 list 加权求和
+            return z_e
+        '''
+        result_shared = self.linear_shared(z_e_shared)
 
-        result_shared = self.linear_shared(z_e)
-        result_pad_shared = self.linear_pad_shared(z_e)
+        # z_e_shared, avg_gate_scores = self.moe(result_shared, z_e_cat)
+
+        # print("domain_", self.c_id)
+        # print("融合后的 z_e:", z_e_shared.shape)  # 输出 (batch_size, input_dim)
+        # print("平均 gate 分数:", avg_gate_scores)  # 输出 (num_experts,)
+        # result_shared = self.linear_shared(z_e_shared)
+        result_pad_shared = self.linear_pad_shared(z_e_shared)
 
         if self.training:
             return result_list, \
